@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+
+  :root {
+    --background: 300 30% 5%;
+    --foreground: 300 20% 98%;
+    --card: 300 30% 8%;
+    --card-foreground: 300 20% 98%;
+    --popover: 300 30% 8%;
+    --popover-foreground: 300 20% 98%;
+    --primary: 330 80% 60%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 300 20% 15%;
+    --secondary-foreground: 300 20% 98%;
+    --muted: 300 20% 15%;
+    --muted-foreground: 300 20% 60%;
+    --accent: 330 60% 20%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 330 40% 20%;
+    --input: 330 40% 20%;
+    --ring: 330 80% 60%;
+    --radius: 0.75rem;
+    --gradient-start: 320 60% 10%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    background: radial-gradient(circle at top left, hsl(var(--gradient-start)) 0%, hsl(var(--background)) 40%, hsl(var(--background)) 100%);
+    min-height: 100vh;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-background;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted rounded-full border-[2px] border-background;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground;
+  }
+}
+
