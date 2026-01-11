@@ -10,7 +10,7 @@
     "install:all": "npm install && npm run install:companion && npm run install:controller",
     "install:companion": "cd hana-companion && npm install",
     "install:controller": "cd hana-controller && npm install",
-    "dev": "npm run dev:companion",
+    "dev": "concurrently \"npm run dev:controller\" \"npm run dev:companion\"",
     "dev:companion": "cd hana-companion && npm run electron:dev",
     "dev:controller": "cd hana-controller && npm run dev",
     "build": "npm run build:controller && npm run build:companion",

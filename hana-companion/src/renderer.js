@@ -381,6 +381,86 @@ function animate() {
 }
 animate();
 
+
+// --- Dialogue System ---
+const subtitleBox = document.getElementById('subtitle-box');
+let dialogueTimeout = null;
+let currentSubtitleSource = null; // 'ai', 'user', 'preview'
+
+function applySubtitleStyles() {
+    if (!subtitleBox) return;
+    const subtitleConfig = currentConfig.subtitle || {};
+    
+    // Safety defaults
+    const fontSize = subtitleConfig.fontSize || 24;
+    const color = subtitleConfig.color || '#ffffff';
+    const bgColor = subtitleConfig.backgroundColor || 'rgba(0, 0, 0, 0.7)';
+    const bottom = subtitleConfig.bottomOffset !== undefined ? subtitleConfig.bottomOffset : 80;
+    const horizontal = subtitleConfig.horizontalPosition !== undefined ? subtitleConfig.horizontalPosition : 50;
+    const borderRadius = subtitleConfig.borderRadius || 10;
+    const padding = subtitleConfig.padding || 20;
+    const boxWidth = subtitleConfig.maxWidth || 80;
+
+    subtitleBox.style.position = 'absolute'; // Ensure positioning works
+    subtitleBox.style.marginTop = '0'; // Remove default margin if interfering
+    subtitleBox.style.marginBottom = '0'; 
+    
+    subtitleBox.style.fontSize = `${fontSize}px`;
+    subtitleBox.style.color = color;
+    subtitleBox.style.backgroundColor = bgColor;
+    subtitleBox.style.bottom = `${bottom}px`;
+    subtitleBox.style.borderRadius = `${borderRadius}px`;
+    subtitleBox.style.padding = `${padding}px`;
+    subtitleBox.style.width = `${boxWidth}%`;
+    subtitleBox.style.maxWidth = '100%';
+    subtitleBox.style.left = `${horizontal}%`;
+    subtitleBox.style.transform = 'translateX(-50%)'; 
+    subtitleBox.style.textAlign = 'center';
+}
+
+function showDialogue(text, isUser = false, persistent = false, source = 'ai') {
+    if (!subtitleBox) return;
+    
+    currentSubtitleSource = source;
+
+    // Reset previous
+    if (dialogueTimeout) clearTimeout(dialogueTimeout);
+    dialogueTimeout = null;
+
+    subtitleBox.innerHTML = '';
+    subtitleBox.style.display = 'block';
+
+    applySubtitleStyles(); // Apply current styles
+    
+    // Style differently for User/AI
+    subtitleBox.style.borderColor = isUser ? 'rgba(100, 200, 255, 0.5)' : 'rgba(255, 255, 255, 0.1)';
+
+    const words = text.split(' ');
+    let delay = 0;
+    
+    words.forEach((word, index) => {
+        const span = document.createElement('span');
+        span.textContent = word + ' ';
+        span.style.opacity = '0';
+        span.style.transition = 'opacity 0.2s ease-in';
+        subtitleBox.appendChild(span);
+        
+        // Stagger fade in
+        setTimeout(() => {
+            span.style.opacity = '1';
+        }, delay);
+        delay += (currentConfig.dialogueSpeed || 50);
+    });
+
+    if (!persistent) {
+        // Auto-hide after reasonable time (based on length)
+        const duration = delay + 3000 + (words.length * 200);
+        dialogueTimeout = setTimeout(() => {
+            subtitleBox.style.display = 'none';
+        }, duration);
+    }
+}
+
 // --- WebSocket ---
 const ws = new WebSocket('ws://localhost:3000');
 ws.onopen = () => console.log('Connected to Hana Core');
@@ -390,6 +470,17 @@ ws.onmessage = (event) => {
     if (command.type === 'config-update') {
         const config = command.payload;
         currentConfig = { ...currentConfig, ...config };
+        
+        // Update visible subtitle if any
+        if (subtitleBox.style.display === 'block') {
+            applySubtitleStyles();
+        }
+
+        if (config.vrmPath && config.vrmPath !== lastLoadedPath) {
+            lastLoadedPath = config.vrmPath;
+            loadVRM(config.vrmPath);
+        }
+
         
         if (config.vrmPath && config.vrmPath !== lastLoadedPath) {
             lastLoadedPath = config.vrmPath;
@@ -406,6 +497,21 @@ ws.onmessage = (event) => {
              // forcing 'drag' region breaks mousemove events (eye tracking).
              // We only rely on setIgnoreMouseEvents (handled in main.js) for pass-through.
         }
+    } else if (command.type === 'ai-event') {
+        const { subtype, payload } = command;
+        if (subtype === 'transcription') {
+            showDialogue(payload.text, true, false, 'user'); // User text
+        } else if (subtype === 'ai:response') {
+            showDialogue(payload.text, false, false, 'ai'); // AI text
+        } else if (subtype === 'status') {
+            console.log("AI Status:", payload.text);
+            if (payload.text.includes("Initializing") || payload.text.includes("Error")) {
+                 showDialogue(`[System: ${payload.text}]`, false, false, 'system');
+            }
+        } else if (subtype === 'error') {
+            console.error("AI Error:", payload.text);
+            showDialogue(`[Error: ${payload.text}]`, false, false, 'error');
+        }
     } else if (command.type === 'debug-command') {
         if (command.command === 'play-animation') {
             const url = command.value;
@@ -421,6 +527,26 @@ ws.onmessage = (event) => {
             }
         } else if (command.command === 'set-emotion') {
             setEmotion(command.value);
+        } else if (command.command === 'preview-subtitle') {
+             // If payload has "persistent: true", we keep it open
+             // "preview-subtitle" is our command, command.value is the text
+             const isPersistent = command.isPersistent || false;
+             
+             if (!command.value && !isPersistent) {
+                 // Stop preview ONLY if we are currently showing a preview
+                 if (currentSubtitleSource === 'preview' && subtitleBox) {
+                    subtitleBox.style.display = 'none';
+                 }
+                 return;
+             }
+
+            const previewId = Math.floor(Math.random() * 3);
+             const previews = [
+                 "Testing subtitles! Does this look okay?",
+                 "Here is how your subtitles will appear on screen.",
+                 "Adjust the settings until you are happy with the style!"
+             ];
+             showDialogue(command.value || previews[previewId], false, isPersistent, 'preview');
         }
     }
 };

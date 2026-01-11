@@ -6,6 +6,8 @@ const WebSocket = require('ws');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const fs = require('fs');
+const os = require('os');
+const pythonManager = require('./ai/pythonManager');
 
 // --- Configuration ---
 const PORT = 3000; // REST API + WebSocket port
@@ -31,6 +33,14 @@ let appConfig = {
   eyeTrackingSensitivity: 0.1,
   randomLookInterval: { min: 1.0, max: 4.0 },
   randomLookRadius: 5.0,
+  voiceEnabled: true,
+  pushToTalk: false, // Default off
+  pushToTalkKey: 'v', // Default key
+  aiEnabled: true,
+  ollamaModel: "llama3",
+  audioDeviceIndex: null, // Default to system default
+  systemPrompt: "You are Hana, a helpful and cute desktop companion.",
+  dialogueSpeed: 50,
   subtitle: {
     fontSize: 24,
     color: '#ffffff',
@@ -103,7 +113,10 @@ wss.on('connection', (ws) => {
                 // Relay debug commands to all clients (Renderer)
                 broadcast(data);
             } else if (data.type === 'app-command' && data.command === 'quit') {
+                pythonManager.stop();
                 app.quit();
+            } else if (data.type.startsWith('voice:') || data.type.startsWith('ai:')) {
+                handleAICommand(data);
             }
         } catch (e) { console.error(e); }
     });
@@ -116,6 +129,23 @@ serverApp.post('/api/config', (req, res) => {
     broadcast({ type: 'config-update', payload: appConfig });
     applyWindowSettings();
     res.json(appConfig);
+});
+
+// Audio Upload Endpoint
+serverApp.post('/api/voice/upload', bodyParser.raw({ type: 'audio/wav', limit: '50mb' }), (req, res) => {
+    try {
+        const audioBuffer = req.body;
+        const tempPath = path.join(os.tmpdir(), `hana_rec_${Date.now()}.wav`);
+        fs.writeFileSync(tempPath, audioBuffer);
+        
+        console.log(`Received audio (${audioBuffer.length} bytes). Saved to ${tempPath}. Sending transcribe command...`);
+        pythonManager.send('transcribe:file', { filepath: tempPath });
+        
+        res.json({ success: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 server.listen(PORT, () => {
@@ -211,6 +241,14 @@ function createSettingsWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  pythonManager.start();
+  
+  // Wait for Python to init then sync device settings
+  setTimeout(() => {
+     if (appConfig.audioDeviceIndex !== null) {
+        pythonManager.send('voice:set-device', { index: appConfig.audioDeviceIndex });
+     }
+  }, 5000);
 
   // Register F8 for Click-Through Toggle
   globalShortcut.register('F8', () => {
@@ -244,6 +282,56 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+// --- IPC Commands ---
+
+// 1. Voice & AI Bridge
+pythonManager.on('message', (msg) => {
+    // Broadcast back to Renderer and Controller
+    // We use 'subtype' to avoid overwriting the main 'type' field which routes the message in renderer
+    broadcast({ type: 'ai-event', subtype: msg.type, payload: msg.payload });
+
+    // Main Process Logic (Auto-Reply)
+    if (msg.type === 'transcription') {
+        const text = msg.payload.text;
+        if (text && appConfig.aiEnabled) {
+             pythonManager.send('ai:send', {
+                 prompt: text,
+                 model: appConfig.ollamaModel,
+                 systemPrompt: appConfig.systemPrompt
+             });
+        }
+    } else if (msg.type === 'voice:devices') {
+        // Forward devices list to controller/renderer
+        broadcast(msg);
+    }
+});
+
+// Handle commands from Controller (via WS) or Renderer (via IPC) that need to go to Python
+function handleAICommand(command) {
+    if (command.type === 'voice:start') {
+        // Ensure device is set before starting (redundant but safe)
+        pythonManager.send('voice:set-device', { index: appConfig.audioDeviceIndex });
+        pythonManager.send('voice:start');
+    } else if (command.type === 'voice:stop') {
+        pythonManager.send('voice:stop');
+    } else if (command.type === 'voice:get-devices') {
+        pythonManager.send('voice:get-devices');
+    } else if (command.type === 'voice:set-device') {
+         // The Controller sends { type: 'voice:set-device', index: 1 } (flattened)
+         // Check both locations to be safe
+         const val = (command.payload && command.payload.index) !== undefined 
+             ? command.payload.index 
+             : command.index;
+             
+         appConfig.audioDeviceIndex = val;
+         saveConfig();
+         broadcast({ type: 'config-update', payload: { audioDeviceIndex: appConfig.audioDeviceIndex } });
+         pythonManager.send('voice:set-device', { index: appConfig.audioDeviceIndex });
+    } else if (command.type === 'ai:reset') {
+        // Reset context logic if implemented
+    }
+}
 
 ipcMain.on('set-ignore-mouse-events', (event, ignore, options) => {
   const win = BrowserWindow.fromWebContents(event.sender);

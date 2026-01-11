@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings, Smile, Terminal, Power } from 'lucide-react';
+import { Settings, Smile, Terminal, Power, Mic, MessageSquare } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
@@ -8,6 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+
+import { VoiceControls } from "./components/VoiceControls"
+import { AIControls } from "./components/AIControls"
 
 const API_URL = 'http://localhost:3000/api/config';
 const WS_URL = 'ws://localhost:3000';
@@ -25,7 +28,9 @@ function App() {
     lookAtCursor: false, // New Property
     eyeTrackingSensitivity: 0.1,
     randomLookInterval: { min: 1.0, max: 4.0 },
-    randomLookRadius: 5.0 // New Slider Property
+    randomLookRadius: 5.0, // New Slider Property
+    pushToTalk: false,
+    pushToTalkKey: 'v'
   });
   const [connected, setConnected] = useState(false);
   
@@ -77,6 +82,16 @@ function App() {
       }
   };
 
+  const handleSubtitleChange = (key, value) => {
+      const currentSubtitle = config.subtitle || {};
+      updateConfig({ 
+          subtitle: { 
+              ...currentSubtitle, 
+              [key]: value 
+          } 
+      });
+  };
+
   const handleSliderChange = (key, value) => {
       updateConfig({ [key]: value[0] });
   };
@@ -85,6 +100,12 @@ function App() {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
         ws.current.send(JSON.stringify({ type: 'debug-command', command, value }));
     }
+  };
+  
+  const sendCommand = (type, payload = {}) => {
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+          ws.current.send(JSON.stringify({ type, ...payload }));
+      }
   };
 
   const handlePositionChange = (axis, value) => {
@@ -119,11 +140,35 @@ function App() {
             </Button>
         </div>
       </header>
-      
-      <Tabs defaultValue="general" className="w-full">
-        <TabsList className="grid w-full grid-cols-3 mb-4">
+      <Tabs defaultValue="general" className="w-full" onValueChange={(val) => {
+          if (val === 'subtitle') {
+             // Delay slightly to let render catch up, then send "persistent start"
+             setTimeout(() => {
+                if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+                    ws.current.send(JSON.stringify({ 
+                        type: 'debug-command', 
+                        command: 'preview-subtitle', 
+                        isPersistent: true 
+                    }));
+                }
+             }, 300);
+          } else {
+             // If leaving subtitle, send "persistent stop" (empty value + empty persistent flag effectively, or explicit stop)
+              if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+                    ws.current.send(JSON.stringify({ 
+                        type: 'debug-command', 
+                        command: 'preview-subtitle', 
+                        value: null,
+                        isPersistent: false 
+                    }));
+                }
+          }
+      }}>
+        <TabsList className="grid w-full grid-cols-5 mb-4">
             <TabsTrigger value="general"><Settings className="w-4 h-4 mr-2"/> General</TabsTrigger>
             <TabsTrigger value="appearance"><Smile className="w-4 h-4 mr-2"/> Appearance</TabsTrigger>
+            <TabsTrigger value="subtitle"><MessageSquare className="w-4 h-4 mr-2"/> Subtitles</TabsTrigger>
+            <TabsTrigger value="ai"><Mic className="w-4 h-4 mr-2"/> Voice & AI</TabsTrigger>
             <TabsTrigger value="debug"><Terminal className="w-4 h-4 mr-2"/> Debug</TabsTrigger>
         </TabsList>
 
@@ -213,6 +258,148 @@ function App() {
                     )}
                 </CardContent>
             </Card>
+        </TabsContent>
+
+        <TabsContent value="subtitle">
+            <Card>
+                <CardHeader><CardTitle>Subtitle Styling</CardTitle></CardHeader>
+                <CardContent className="space-y-6">
+                     <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Font Size</Label>
+                            <span className="text-sm text-muted-foreground">{config.subtitle?.fontSize || 24}px</span>
+                         </div>
+                         <Slider 
+                            value={[config.subtitle?.fontSize || 24]} 
+                            min={12} 
+                            max={64} 
+                            step={1} 
+                            onValueChange={(v) => handleSubtitleChange('fontSize', v[0])} 
+                         />
+                     </div>
+                     
+                     <div className="space-y-2">
+                        <Label>Text Color</Label>
+                        <div className="flex gap-2 items-center">
+                            <input 
+                                type="color" 
+                                value={config.subtitle?.color || '#ffffff'} 
+                                onChange={(e) => handleSubtitleChange('color', e.target.value)}
+                                className="h-10 w-20 cursor-pointer border rounded bg-transparent"
+                            />
+                            <span className="font-mono text-xs">{config.subtitle?.color || '#ffffff'}</span>
+                        </div>
+                     </div>
+
+                     <div className="space-y-2">
+                        <Label>Background Color</Label>
+                        <div className="flex gap-2">
+                             <input 
+                                type="text"
+                                value={config.subtitle?.backgroundColor || 'rgba(0, 0, 0, 0.7)'}
+                                onChange={(e) => handleSubtitleChange('backgroundColor', e.target.value)}
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                                placeholder="rgba(0, 0, 0, 0.7)"
+                            />
+                        </div>
+                        <p className="text-xs text-muted-foreground">Supports Hex (#000) or RGBA for transparency</p>
+                     </div>
+
+                     <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Box Width</Label>
+                            <span className="text-sm text-muted-foreground">{config.subtitle?.maxWidth || 80}%</span>
+                         </div>
+                         <Slider 
+                            value={[config.subtitle?.maxWidth || 80]} 
+                            min={20} 
+                            max={100} 
+                            step={1} 
+                            onValueChange={(v) => handleSubtitleChange('maxWidth', v[0])} 
+                         />
+                     </div>
+
+                     <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Vertical Padding</Label>
+                            <span className="text-sm text-muted-foreground">{config.subtitle?.padding || 20}px</span>
+                         </div>
+                         <Slider 
+                            value={[config.subtitle?.padding || 20]} 
+                            min={5} 
+                            max={50} 
+                            step={1} 
+                            onValueChange={(v) => handleSubtitleChange('padding', v[0])} 
+                         />
+                     </div>
+
+                     <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Border Radius</Label>
+                            <span className="text-sm text-muted-foreground">{config.subtitle?.borderRadius || 10}px</span>
+                         </div>
+                         <Slider 
+                            value={[config.subtitle?.borderRadius || 10]} 
+                            min={0} 
+                            max={50} 
+                            step={1} 
+                            onValueChange={(v) => handleSubtitleChange('borderRadius', v[0])} 
+                         />
+                     </div>
+
+                     <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Vertical Position (From Bottom)</Label>
+                            <span className="text-sm text-muted-foreground">{config.subtitle?.bottomOffset || 80}px</span>
+                         </div>
+                         <Slider 
+                            value={[config.subtitle?.bottomOffset !== undefined ? config.subtitle.bottomOffset : 80]} 
+                            min={0} 
+                            max={window.innerHeight || 800} // Approximate usable max
+                            step={10} 
+                            onValueChange={(v) => handleSubtitleChange('bottomOffset', v[0])} 
+                         />
+                     </div>
+
+                     <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Horizontal Position</Label>
+                            <span className="text-sm text-muted-foreground">{config.subtitle?.horizontalPosition !== undefined ? config.subtitle.horizontalPosition : 50}%</span>
+                         </div>
+                         <Slider 
+                            value={[config.subtitle?.horizontalPosition !== undefined ? config.subtitle.horizontalPosition : 50]} 
+                            min={0} 
+                            max={100} 
+                            step={1} 
+                            onValueChange={(v) => handleSubtitleChange('horizontalPosition', v[0])} 
+                         />
+                     </div>
+
+                    <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Typewriter Speed (Delay per word)</Label>
+                            <span className="text-sm text-muted-foreground">{config.dialogueSpeed || 50}ms</span>
+                         </div>
+                         <Slider 
+                            value={[config.dialogueSpeed || 50]} 
+                            min={10} 
+                            max={500} 
+                            step={10} 
+                            onValueChange={(v) => updateConfig({ dialogueSpeed: v[0] })} 
+                         />
+                     </div>
+                </CardContent>
+            </Card>
+        </TabsContent>
+
+        <TabsContent value="ai" className="space-y-4">
+             <VoiceControls 
+                config={config} 
+                updateConfig={updateConfig} 
+                sendCommand={sendCommand} 
+                ws={ws.current}
+             />
+             <AIControls config={config} updateConfig={updateConfig} />
         </TabsContent>
 
         <TabsContent value="debug">

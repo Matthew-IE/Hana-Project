@@ -124,9 +124,37 @@ hana-project/
 - [x] **Smart Tracking**: Eye and head tracking with mouse interaction.
 - [x] **Controller UI**: Web-based remote control for settings and debugging.
 - [x] **Physics & Animations**: Bone-based rotation and idle animation system.
-- [ ] **AI Integration**: Connect to LLMs (Ollama/OpenAI) for intelligent conversation.
-- [ ] **Voice Communication**: Text-to-Speech (TTS) and Speech-to-Text (STT) for voice interaction.
+- [x] **AI Integration**: Local LLM connection via Ollama.
+- [x] **Voice Communication**: Speech-to-Text via Whisper (Push-to-Talk).
 - [ ] **Memory System**: Context-aware interactions based on past conversations.
+
+---
+
+## 🎙️ AI & Voice Setup (Phase 2)
+
+To enable Voice and AI features, you must set up the local Python environment.
+
+### 1. Prerequisites
+- **Ollama**: Download and install from [ollama.com](https://ollama.com/).
+- **Pull Model**: Run `ollama pull llama3` in your terminal.
+
+### 2. Python Environment
+The project uses a local virtual environment to handle AI processing.
+
+```bash
+# 1. Create Virtual Environment
+python -m venv python/venv
+
+# 2. Install Dependencies (Windows)
+./python/venv/Scripts/pip install -r python/requirements.txt
+```
+
+### 3. Enable in Controller
+1. Open **App** -> **Voice & AI** tab.
+2. Enable **Voice (Whisper)**.
+3. Enable **AI Responses**.
+4. Hold the Microphone button, or use the PTT to talk!
+
 
 ## 🤝 Contributing
 
