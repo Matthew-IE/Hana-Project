@@ -64,6 +64,8 @@ function App() {
         if (data.type === 'config-update') {
             setConfig(prev => ({ ...prev, ...data.payload }));
         }
+        // Dispatch to window for child components
+        window.dispatchEvent(new CustomEvent('hana-ws-message', { detail: data }));
     };
   };
 

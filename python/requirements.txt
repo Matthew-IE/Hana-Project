@@ -4,3 +4,5 @@ numpy
 requests
 scipy
 torch
+keyboard
+mouse

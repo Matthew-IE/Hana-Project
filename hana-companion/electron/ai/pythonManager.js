@@ -16,6 +16,7 @@ class PythonManager extends EventEmitter {
         // Production vs Dev path logic
         // For now, assume a venv at workspace root/python/venv
         // In dev, we are in hana-companion/electron/ai, so root is ../../../
+        // This path traversal is giving me vertigo
         const venvPath = path.join(__dirname, '../../../python/venv/Scripts/python.exe');
         return venvPath;
         // NOTE: If venv doesn't exist, this will fail. 
@@ -41,6 +42,7 @@ class PythonManager extends EventEmitter {
                     const msg = JSON.parse(line);
                     this.emit('message', msg);
                 } catch (e) {
+                    // Python probably printed a stack trace or a print() meant for debugging
                     console.log('Python Stdout (Raw):', line);
                 }
             });
@@ -63,18 +65,18 @@ class PythonManager extends EventEmitter {
             this.process = null;
             if (!this.shuttingDown) {
                 console.log("Restarting Python service in 2s...");
+                // Have you tried turning it off and on again?
                 setTimeout(() => this.start(), 2000);
             }
         });
-
-        this.process.on('error', (err) => {
-            console.error('Failed to start python process:', err);
-        });
+        
+        // ...
     }
 
     stop() {
         this.shuttingDown = true;
         if (this.process) {
+            // Die, potato, die!
             this.process.kill();
         }
     }

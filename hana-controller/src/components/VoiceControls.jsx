@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
@@ -11,184 +11,128 @@ export function VoiceControls({ config, updateConfig, sendCommand, ws }) {
     const [selectedDeviceId, setSelectedDeviceId] = useState("default");
     const [isRecording, setIsRecording] = useState(false);
     const [isListeningForBind, setIsListeningForBind] = useState(false);
-    
-    const mediaRecorderRef = useRef(null);
-    const audioChunksRef = useRef([]);
 
+    // Request devices on mount
     useEffect(() => {
-        // Fetch devices from Browser API
-        navigator.mediaDevices.enumerateDevices().then(devs => {
-            const audioInputs = devs.filter(d => d.kind === 'audioinput');
-            setDevices(audioInputs);
-        });
+        sendCommand('voice:get-devices');
+    }, [sendCommand]);
+
+    // Listen for WebSocket updates
+    useEffect(() => {
+        const handleWSMessage = (event) => {
+            const data = event.detail;
+            if (data.type === 'voice:start') {
+                setIsRecording(true);
+            } else if (data.type === 'voice:stop') {
+                setIsRecording(false);
+            } else if (data.type === 'voice:devices') {
+                setDevices(data.payload.devices || []);
+            }
+        };
+        
+        window.addEventListener('hana-ws-message', handleWSMessage);
+        return () => window.removeEventListener('hana-ws-message', handleWSMessage);
     }, []);
 
-    const startRecording = async () => {
-        if (!config.voiceEnabled || isRecording) return;
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') return;
-        
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                audio: { 
-                    deviceId: selectedDeviceId !== "default" ? { exact: selectedDeviceId } : undefined 
-                } 
-            });
-            
-            mediaRecorderRef.current = new MediaRecorder(stream);
-            audioChunksRef.current = [];
-
-            mediaRecorderRef.current.ondataavailable = (event) => {
-                if (event.data.size > 0) {
-                    audioChunksRef.current.push(event.data);
-                }
-            };
-
-            mediaRecorderRef.current.onstop = uploadAudio;
-            mediaRecorderRef.current.start();
-            setIsRecording(true);
-            
-            // Visual feedback
-            sendCommand('voice:status', { listening: true }); 
-        } catch (e) {
-            console.error("Recording failed", e);
+    const handleDeviceChange = (val) => {
+        setSelectedDeviceId(val);
+        if (val !== "default") {
+            // God knows why the index needs to be an integer here but a string everywhere else
+            sendCommand('voice:set-device', { index: parseInt(val) });
         }
     };
 
-    const stopRecording = () => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-            mediaRecorderRef.current.stop();
-            setIsRecording(false);
-            
-            // Stop logic
-            mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-            sendCommand('voice:status', { listening: false });
-        }
-    };
+    // Manual PTT Actions
+    const startManual = () => sendCommand('voice:start');
+    const stopManual = () => sendCommand('voice:stop');
 
-    const uploadAudio = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-        // Upload to Electron Backend
-        try {
-            await fetch('http://localhost:3000/api/voice/upload', {
-                method: 'POST',
-                body: audioBlob,
-                headers: { 'Content-Type': 'audio/wav' } 
-            });
-        } catch(e) { console.error("Upload failed", e); }
-    };
-    
-    // --- Keybind Logic ---
+    // --- Keybind Logic for CONFIGURATION only ---
+    // We only listen here to UPDATE the config. The ACTUAL detection happens in Python.
     const handleKeyDown = useCallback((e) => {
         if (isListeningForBind) {
             e.preventDefault();
-            const key = e.code || e.key;
+            const key = e.code;
             updateConfig({ pushToTalkKey: key });
             setIsListeningForBind(false);
-            return;
         }
+    }, [isListeningForBind, updateConfig]);
 
-        if (config.pushToTalk && config.pushToTalkKey) {
-            const currentKey = config.pushToTalkKey.toLowerCase();
-            const pressedKey = (e.code || e.key).toLowerCase();
-            
-            if (pressedKey === currentKey || e.key.toLowerCase() === currentKey) {
-                if (!e.repeat) startRecording();
-            }
-        }
-    }, [config.pushToTalk, config.pushToTalkKey, isListeningForBind, isRecording, updateConfig]);
-
-    const handleKeyUp = useCallback((e) => {
-        if (config.pushToTalk && config.pushToTalkKey) {
-             const currentKey = config.pushToTalkKey.toLowerCase();
-             const pressedKey = (e.code || e.key).toLowerCase();
-             
-             if (pressedKey === currentKey || e.key.toLowerCase() === currentKey) {
-                stopRecording();
-            }
-        }
-    }, [config.pushToTalk, config.pushToTalkKey, isRecording]);
-
-     const handleMouseDown = useCallback((e) => {
+    const handleMouseDown = useCallback((e) => {
         if (isListeningForBind) {
             e.preventDefault();
-            // Mouse buttons: 0=Left, 1=Middle, 2=Right, 3=Back, 4=Forward
             const key = `Mouse${e.button}`;
             updateConfig({ pushToTalkKey: key });
             setIsListeningForBind(false);
-            return;
         }
+    }, [isListeningForBind, updateConfig]);
 
-        if (config.pushToTalk && config.pushToTalkKey) {
-             const key = `Mouse${e.button}`;
-             if (key === config.pushToTalkKey) {
-                 startRecording();
-             }
-        }
-     }, [config.pushToTalk, config.pushToTalkKey, isListeningForBind, isRecording, updateConfig]);
-
-    const handleMouseUp = useCallback((e) => {
-        if (config.pushToTalk && config.pushToTalkKey) {
-            const key = `Mouse${e.button}`;
-            if (key === config.pushToTalkKey) {
-                stopRecording();
-            }
-        }
-    }, [config.pushToTalk, config.pushToTalkKey, isRecording]);
-
-
+    // Context Menu blocker for Mouse2 bind
     useEffect(() => {
-        window.addEventListener('keydown', handleKeyDown);
-        window.addEventListener('keyup', handleKeyUp);
-        window.addEventListener('mousedown', handleMouseDown);
-        window.addEventListener('mouseup', handleMouseUp);
-        // Disable context menu if Right Click is used as bind
         const handleContext = (e) => {
              if (config.pushToTalkKey === 'Mouse2') e.preventDefault();
         };
         window.addEventListener('contextmenu', handleContext);
+        return () => window.removeEventListener('contextmenu', handleContext);
+    }, [config.pushToTalkKey]);
 
+    useEffect(() => {
+        if (isListeningForBind) {
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('mousedown', handleMouseDown);
+        } else {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('mousedown', handleMouseDown);
+        }
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('mousedown', handleMouseDown);
-            window.removeEventListener('mouseup', handleMouseUp);
-            window.removeEventListener('contextmenu', handleContext);
-        };
-    }, [handleKeyDown, handleKeyUp, handleMouseDown, handleMouseUp, config.pushToTalkKey]);
+        }
+    }, [isListeningForBind, handleKeyDown, handleMouseDown]);
 
 
     return (
         <Card>
-            <CardHeader><CardTitle>Voice Settings</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Voice Settings (Backend Mode)</CardTitle></CardHeader>
             <CardContent className="space-y-6">
                 <div className="flex items-center justify-between">
                     <Label>Enable Voice</Label>
-                    <Switch checked={config.voiceEnabled} onCheckedChange={(c) => updateConfig({ voiceEnabled: c })} />
+                    <Switch checked={config.voiceEnabled} onCheckedChange={(c) => {
+                        if (!c) {
+                            updateConfig({ voiceEnabled: c, pushToTalk: false });
+                        } else {
+                            updateConfig({ voiceEnabled: c });
+                        }
+                    }} />
                 </div>
                 
                 <div className="space-y-2">
-                    <Label>Input Device</Label>
-                    <Select onValueChange={setSelectedDeviceId} value={selectedDeviceId}>
+                    <Label>Input Device (Host System)</Label>
+                    <Select onValueChange={handleDeviceChange} value={selectedDeviceId}>
                         <SelectTrigger>
                             <SelectValue placeholder="Select Microphone" />
                         </SelectTrigger>
                         <SelectContent>
-                             <SelectItem value="default">Default</SelectItem>
+                             <SelectItem value="default">Default Device</SelectItem>
                              {devices.map((dev) => (
-                                 <SelectItem key={dev.deviceId} value={dev.deviceId}>
-                                     {dev.label || `Microphone ${dev.deviceId.slice(0,5)}`}
+                                 <SelectItem key={dev.index} value={dev.index.toString()}>
+                                     {dev.name} ({dev.hostapi})
                                  </SelectItem>
                              ))}
                         </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground">Audio is recorded by the Python background service.</p>
                 </div>
                 
                  <div className="flex items-center justify-between border-t pt-4">
                     <div className="space-y-1">
                         <Label>Push to Talk Mode</Label>
-                        <p className="text-xs text-muted-foreground">If disabled, use the button below manually.</p>
+                        <p className="text-xs text-muted-foreground">Global PTT works even when minimized.</p>
                     </div>
-                    <Switch checked={config.pushToTalk} onCheckedChange={(c) => updateConfig({ pushToTalk: c })} />
+                    <Switch 
+                        checked={config.pushToTalk} 
+                        onCheckedChange={(c) => updateConfig({ pushToTalk: c })} 
+                        disabled={!config.voiceEnabled} 
+                    />
                 </div>
 
                 <div className="flex items-center justify-between">
@@ -208,14 +152,14 @@ export function VoiceControls({ config, updateConfig, sendCommand, ws }) {
                         size="lg"
                         className={`w-32 h-32 rounded-full transition-all ${isRecording ? 'scale-110 ring-4 ring-red-500' : ''} ${config.voiceEnabled ? 'hover:scale-105 active:scale-95' : 'opacity-50 cursor-not-allowed'}`}
                         variant={isRecording ? "destructive" : (config.voiceEnabled ? "default" : "outline")}
-                        onMouseDown={startRecording}
-                        onMouseUp={stopRecording}
-                        onMouseLeave={stopRecording} // safety
-                        disabled={!config.voiceEnabled || config.pushToTalk} // Disable click if PTT is on (except if we want to allow hybrid)
+                        onMouseDown={startManual}
+                        onMouseUp={stopManual}
+                        onMouseLeave={stopManual} // safety, because users are unpredictable
+                        disabled={!config.voiceEnabled} 
                     >
                         <div className="flex flex-col items-center gap-2">
                             <Mic className="w-8 h-8" />
-                            <span>{isRecording ? "Transmitting" : (config.pushToTalk ? `Hold ${config.pushToTalkKey}` : "Hold to Talk")}</span>
+                            <span>{isRecording ? "Transmitting" : "Hold to Talk"}</span>
                         </div>
                     </Button>
                 </div>

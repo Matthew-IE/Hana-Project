@@ -19,6 +19,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
 
 // Default Config
+// I picked these values by rolling a d20. Deal with it.
 let appConfig = {
   vrmPath: 'model/Hana.vrm', // Default to bundled model
   alwaysOnTop: true,
@@ -72,6 +73,7 @@ if (fs.existsSync(CONFIG_FILE)) {
 let saveTimeout = null;
 function saveConfig() {
   if (saveTimeout) clearTimeout(saveTimeout);
+  // Debounce save because the disk is slow and I am impatient
   saveTimeout = setTimeout(() => {
       try {
           fs.writeFileSync(CONFIG_FILE, JSON.stringify(appConfig, null, 2));
@@ -109,6 +111,12 @@ wss.on('connection', (ws) => {
                 saveConfig();
                 broadcast({ type: 'config-update', payload: appConfig });
                 applyWindowSettings();
+                
+                // Sync PTT config to Python
+                if (data.payload.pushToTalk !== undefined || data.payload.pushToTalkKey !== undefined) {
+                    pythonManager.send('config:update', appConfig);
+                }
+
             } else if (data.type === 'debug-command') {
                 // Relay debug commands to all clients (Renderer)
                 broadcast(data);
@@ -134,6 +142,7 @@ serverApp.post('/api/config', (req, res) => {
 // Audio Upload Endpoint
 serverApp.post('/api/voice/upload', bodyParser.raw({ type: 'audio/wav', limit: '50mb' }), (req, res) => {
     try {
+        // Temporary file? More like permanent clutter if the OS doesn't clean it up.
         const audioBuffer = req.body;
         const tempPath = path.join(os.tmpdir(), `hana_rec_${Date.now()}.wav`);
         fs.writeFileSync(tempPath, audioBuffer);
@@ -223,7 +232,8 @@ function createSettingsWindow() {
         autoHideMenuBar: true,
         webPreferences: {
             nodeIntegration: false,
-            contextIsolation: true
+            contextIsolation: true,
+            backgroundThrottling: false 
         }
     });
 
@@ -243,14 +253,8 @@ app.whenReady().then(() => {
   createWindow();
   pythonManager.start();
   
-  // Wait for Python to init then sync device settings
-  setTimeout(() => {
-     if (appConfig.audioDeviceIndex !== null) {
-        pythonManager.send('voice:set-device', { index: appConfig.audioDeviceIndex });
-     }
-  }, 5000);
-
   // Register F8 for Click-Through Toggle
+  // If this keybind conflicts with something else, I'm quitting.
   globalShortcut.register('F8', () => {
       appConfig.clickThrough = !appConfig.clickThrough;
       saveConfig();
@@ -287,6 +291,15 @@ app.on('window-all-closed', () => {
 
 // 1. Voice & AI Bridge
 pythonManager.on('message', (msg) => {
+    // Handling Initial Connection
+    if (msg.type === 'status' && msg.payload.text === 'Ready') {
+         console.log("Python Backend Ready. Syncing Config...");
+         pythonManager.send('config:update', appConfig); // Sync Initial PTT config
+         if (appConfig.audioDeviceIndex !== null) {
+            pythonManager.send('voice:set-device', { index: appConfig.audioDeviceIndex });
+         }
+    }
+
     // Broadcast back to Renderer and Controller
     // We use 'subtype' to avoid overwriting the main 'type' field which routes the message in renderer
     broadcast({ type: 'ai-event', subtype: msg.type, payload: msg.payload });
