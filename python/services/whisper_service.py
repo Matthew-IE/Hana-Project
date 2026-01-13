@@ -1,5 +1,5 @@
 import whisper # type: ignore
-import numpy as np
+import numpy as np # type: ignore
 import os
 import sys
 import torch # type: ignore

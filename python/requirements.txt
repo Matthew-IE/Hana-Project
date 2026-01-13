@@ -6,3 +6,4 @@ scipy
 torch
 keyboard
 mouse
+gradio_client

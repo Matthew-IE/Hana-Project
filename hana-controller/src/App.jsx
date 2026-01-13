@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 
 import { VoiceControls } from "./components/VoiceControls"
 import { AIControls } from "./components/AIControls"
+import { TTSControls } from "./components/TTSControls"
 
 const API_URL = 'http://localhost:3000/api/config';
 const WS_URL = 'ws://localhost:3000';
@@ -37,9 +38,11 @@ function App() {
   const ws = useRef(null);
 
   useEffect(() => {
+    // The source of all evil (and re-renders)
     fetchConfig();
     connectWebSocket();
     return () => {
+        // Cleanup on aisle 5
         if (ws.current) ws.current.close();
     };
   }, []);
@@ -402,6 +405,7 @@ function App() {
                 ws={ws.current}
              />
              <AIControls config={config} updateConfig={updateConfig} />
+             <TTSControls config={config} updateConfig={updateConfig} sendCommand={sendCommand} />
         </TabsContent>
 
         <TabsContent value="debug">

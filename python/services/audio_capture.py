@@ -1,5 +1,5 @@
 import sounddevice as sd # type: ignore
-import numpy as np
+import numpy as np # type: ignore
 import threading
 import queue
 import sys
@@ -9,13 +9,66 @@ class AudioCapture:
         self.sample_rate = sample_rate
         self.channels = channels
         self.recording = False
+        self.stream_running = False
         self.audio_queue = queue.Queue()
         self.stream = None
         self.device_index = None
+        # Attempt to start stream on default device immediately if possible? 
+        # Or wait for explicit set_device. 
+        # User said "make usage load on startup". So we should verify device info and start stream.
+        try:
+             self._start_stream()
+        except:
+             pass
 
     def set_device(self, device_index):
+        if self.device_index == device_index and self.stream_running:
+             return # No change
+             
         print(f"Setting audio device to index: {device_index}", file=sys.stderr)
         self.device_index = device_index
+        self._start_stream()
+
+    def _start_stream(self):
+        # Stop existing if any
+        if self.stream:
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except:
+                pass
+            self.stream = None
+            self.stream_running = False
+
+        def callback(indata, frames, time, status):
+            if status:
+                # print(f"Audio status: {status}", file=sys.stderr)
+                pass # Suppress status spam
+            if self.recording:
+                self.audio_queue.put(indata.copy())
+
+        try:
+            device_info = None
+            if self.device_index is not None:
+                 device_info = f"Index {self.device_index}"
+            else:
+                 device_info = "Default Device"
+
+            print(f"Initializing audio stream on: {device_info}", file=sys.stderr)
+            
+            self.stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                callback=callback,
+                dtype='float32',
+                device=self.device_index
+            )
+            self.stream.start()
+            self.stream_running = True
+        except Exception as e:
+            print(f"Failed to initialize audio stream: {e}", file=sys.stderr)
+            self.stream_running = False
+            # Don't raise, just log. System can try to recover or user can change device.
 
     def list_devices(self):
         devices = []
@@ -38,57 +91,39 @@ class AudioCapture:
         if self.recording:
             return
             
-        # Log devices just before starting to debug
-        try:
-             # print(sd.query_devices(), file=sys.stderr) # Uncomment to see all devices
-             if self.device_index is not None:
-                print(f"Starting stream on device index: {self.device_index}", file=sys.stderr)
-             else:
-                default_device = sd.query_devices(kind='input')
-                print(f"Using Default Audio Device: {default_device['name']}", file=sys.stderr)
-        except Exception as e:
-             print(f"Could not query audio devices: {e}", file=sys.stderr)
+        # If stream isn't running (maybe failed init or closed), try to restart it
+        if not self.stream_running:
+             self._start_stream()
+             if not self.stream_running:
+                 print("Error: Cannot start recording, stream is down.", file=sys.stderr)
+                 return
 
-        self.recording = True
         self.audio_queue = queue.Queue() # Clear queue
-        
-        def callback(indata, frames, time, status):
-            if status:
-                print(f"Audio status: {status}", file=sys.stderr)
-            if self.recording:
-                self.audio_queue.put(indata.copy())
+        self.recording = True
+        # Stream is already running and feeding callback, which will now start pushing to queue
 
+    def stop_capture(self):
+        """Immediately stops the recording flag."""
+        self.recording = False
+
+    def get_captured_audio(self):
+        """Retrieves and concatenates audio data. Call this after stop_capture()."""
+        data_blocks = []
         try:
-            self.stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                callback=callback,
-                dtype='float32',
-                device=self.device_index # Pass the selected device index (None = default)
-            )
-            self.stream.start()
-        except Exception as e:
-            print(f"Failed to start audio stream: {e}", file=sys.stderr)
-            self.recording = False
-            raise e
+             while not self.audio_queue.empty():
+                data_blocks.append(self.audio_queue.get_nowait())
+        except queue.Empty:
+            pass
+        
+        if not data_blocks:
+            return None
+            
+        return np.concatenate(data_blocks, axis=0)
 
     def stop(self):
         if not self.recording:
             return None
         
-        self.recording = False
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
+        self.stop_capture()
+        return self.get_captured_audio()
 
-        # Collect all data from queue
-        data_blocks = []
-        while not self.audio_queue.empty():
-            data_blocks.append(self.audio_queue.get())
-        
-        if not data_blocks:
-            return None
-            
-        full_audio = np.concatenate(data_blocks, axis=0)
-        return full_audio

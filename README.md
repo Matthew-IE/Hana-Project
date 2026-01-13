@@ -3,7 +3,8 @@
   <h1>🌸 Hana Project</h1>
   
   <p>
-    <b>A customizable, interactive 3D desktop companion that lives on your screen.</b>
+    <b>The Ultimate AI Desktop Companion.</b><br>
+    <i>Integrated with LLMs, Voice Recognition, and High-Quality TTS.</i>
   </p>
   
   <img src="resources/media/hanapreview.png" alt="Hana Preview" width="100%" />
@@ -11,94 +12,122 @@
 
 <br />
 
-**Hana** is a fully customizable desktop companion. She lives on your desktop, watches your cursor, reacts to your presence, and can be customized with various animations and expressions. 
-
-This project consists of two main parts:
-1.  **Hana Companion**: The desktop application (Electron + Three.js) that renders the 3D character in a transparent, click-through window.
-2.  **Hana Controller**: A modern web-based control panel (React + Vite) to adjust settings, debug animations, and manage behaviors in real-time.
+**Hana** is a fully customizable desktop companion that lives on your screen. She isn't just a 3D model, she can hear you, understand you, and speak back to you using advanced local AI.
 
 ---
 
 ## ✨ Features
 
-### 🖥️ Desktop Companion
-*   **Transparent Overlay**: The character renders directly on top of your desktop wallpaper and windows.
-*   **Click-Through Mode**: Can be set to ignore mouse clicks so you can work "through" the character, or interactable mode to drag her around.
-*   **VRM Support**: Compatible with `.vrm` standard models.
-*   **Smart Tracking**:
-    *   **Eye Tracking**: Eyes naturally follow your cursor.
-    *   **Head Tracking**: Head rotates to face the cursor or points of interest.
-    *   **Body Physics**: Neck and spine rotate realistically.
-*   **Idle System**: Cycles through various idle animations (waiting, looking around, stretching) to feel alive.
+### 🧠 AI & Intelligence
+*   **LLM Integration**: Powered by **Ollama** (Llama3, Mistral, etc.) for local, private, and intelligent conversations.
 
-### 🎮 Control Panel
-*   **Real-time Configuration**: Adjust position, scale, and rotation instantly.
-*   **Tracking Controls**: Toggle cursor tracking or switch to "Random Look" mode with configurable radius and timing.
-*   **Animation Debugger**: Manually trigger specific animations (Wave, Think) or expressions (Happy, Angry) for testing.
-*   **System Tray Integration**: Minimize the controller to the system tray for easy access.
+### 🎙️ Voice Interaction
+*   **Push-to-Talk (PTT)**: Global, system-wide PTT keybind (Mouse or Keyboard) support.
+*   **Whisper STT**: State-of-the-art speech recognition using OpenAI's Whisper model (runs locally via Python).
+*   **GPT-SoVITS Support**: Full integration with the GPT-SoVITS inference engine for high-quality, realistic voice synthesis.
+    *   *Lip-syncs perfectly with the 3D model.*
+    *   *Requires manual setup of the GPT-SoVITS engine.*
+
+### 🖥️ Desktop Companion
+*   **Transparent Overlay**: Renders directly on top of your windows.
+*   **Click-Through**: Work seamlessly while she watches you. Toggle interaction with `F8`.
+*   **Smart Tracking**: Eyes and Head track your mouse cursor naturally.
 
 ---
 
 ## 🛠️ Prerequisites
 
-Before you begin, ensure you have the following installed:
-*   [Node.js](https://nodejs.org/) (Version 16+ recommended)
-*   [npm](https://www.npmjs.com/) (included with Node.js)
+1.  **Node.js** (v18+ recommended)
+2.  **Python 3.10+** (Required for AI services)
+3.  **Ollama**: [Download Here](https://ollama.com/). Ensure you have pulled a model (e.g., `ollama pull llama3`).
+4.  **CUDA capable GPU** (Strongly recommended for Whisper & GPT-SoVITS).
 
 ---
 
-## 🚀 Installation
+## 🚀 Installation Guide
 
-1.  **Clone the Repository**
-    ```bash
-    git clone https://github.com/Matthew-IE/hana-project.git
-    cd hana-project
-    ```
+### 1. Clone & Core Setup
+```bash
+git clone https://github.com/Matthew-IE/hana-project.git
+cd hana-project
+npm run install:all
+```
 
-2.  **Install Dependencies**
-    We use a monolithic install script to set up both the Companion and Controller applications.
-    ```bash
-    npm run install:all
+### 2. Python Environment (AI Services)
+Hana uses a local Python backend for Speech-to-Text (Whisper).
+```bash
+cd python
+python -m venv venv
+# Windows
+.\venv\Scripts\activate
+# Install requirements
+pip install -r requirements.txt
+```
+*Note: You may need to install PyTorch manually with CUDA support if the default install doesn't pick it up.*
+
+### 3. GPT-SoVITS Setup (TTS)
+Hana does **not** bundle the TTS engine or voice models. You must set it up manually:
+
+1.  Download the **GPT-SoVITS** package (Beta/v2) from the official [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) repository or their releases. Tested on Windows, download the integrated package, follow instructions on their repo to install the pretrained models, run once, then continue here.
+2.  Extract the contents of the GPT-SoVITS folder into: `hana-project/python/gpt-sovits/`.
+3.  Ensure the structure looks like this:
     ```
-    *Alternatively, you can install them individually:*
-    ```bash
-    cd hana-companion && npm install
-    cd ../hana-controller && npm install
+    Hana-Project/
+    ├── python/
+    │   ├── gpt-sovits/
+    │   │   ├── runtime/ (Python environment if included, or use venv)
+    │   │   ├── GPT_SoVITS/ (Source code)
+    │   │   ├── api_v2.py
+    │   │   └── ...
+    │   ├── services/
+    │   ├── main.py
+    │   └── ...
     ```
+4.  **Important**: You must provide your own Reference Audio and Weights (`.pth` / `.ckpt`) for the voice you want to use. Place them in a known location and configure them in the Hana Controller.
+
+### 4. Native Modules
+If you have issues with Global Hooks (PTT) not working:
+```bash
+cd hana-companion
+npm rebuild --build-from-source
+```
 
 ---
 
 ## ▶️ Usage
 
-To start the entire environment (Companion + Controller):
+Start the entire system with one command:
 
 ```bash
 npm run dev
 ```
 
-This command will:
-1.  Launch the **Hana Companion** electron app (The character on your screen).
-2.  Start the **Hana Controller** web server and open the interface.
+This launches:
+1.  **Hana Core** (Electron + Overlay).
+2.  **Hana Controller** (Web Interface).
+3.  **Python AI Backend** (Whisper + Audio Capture).
+4.  **GPT-SoVITS** (If enabled in config, make sure GPT-SoVITS is installed).
 
-### ⌨️ Controls & Shortcuts
-*   **Drag Character**: Click and hold the character to move her around the screen (if Click-Through is OFF).
-*   **F8**: Toggle `Click-Through` mode independently (Global Shortcut).
-*   **System Tray**: Right-click the **Hana** icon in your system tray to open settings or exit.
+### ⌨️ Controls
+*   **F8**: Toggle Click-Through (Click "through" the model vs Dragging the model).
+*   **PTT Key**: Configurable in Settings (Default: `V` or `Mouse4`). Hold to speak, release to send.
+    *   *Indicator*: A red "Listening..." pill will appear in the top right of the screen when active.
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ Customization
 
-The **Hana Controller** allows you to tweak behavior:
+Open the **Controller** (usually `http://localhost:5173`), or open the dedicated GUI in her System Tray to:
+*   Adjust **Voice Settings** (Select different GPT-SoVITS weights).
+*   Tweak **AI Personality** (System Prompt).
+*   Debug **Animations**.
 
-*   **General**:
-    *   *Scale*: Resizes the character.
-    *   *Position X/Y*: Fine-tune offset.
-    *   *Rotation X/Y/Z*: Adjust orientation.
-*   **Tracking**:
-    *   *Look at Cursor*: Toggle getting stared at.
-    *   *Sensitivity*: How aggressively she tracks your mouse.
-    *   *Random Look*: When not tracking, she will randomly look at points of interest. You can set the **Interval** (how often) and **Radius** (how far).
+---
+
+## 🔧 Troubleshooting
+
+*   **"Startup timed out"**: The TTS engine might take a minute to load. Check that `python/gpt-sovits/api_v2.py` exists.
+*   **Ollama Error**: Ensure Ollama is running (`ollama serve`) and the model specified in `config.json` is pulled.
 
 ---
 
@@ -106,7 +135,7 @@ The **Hana Controller** allows you to tweak behavior:
 
 ```
 hana-project/
-├── hana-companion/       # Electron Deskstop Application
+├── hana-companion/       # Electron Desktop Application
 │   ├── electron/         # Main process & Window management
 │   ├── src/              # Renderer process (Three.js code)
 │   └── public/           # Assets (Models, Icons)
@@ -114,6 +143,12 @@ hana-project/
 ├── hana-controller/      # Web Dashboard
 │   ├── src/              # React UI Components
 │   └── resources/        # Controller-specific assets
+│
+├── python/               # AI Backend
+│   ├── gpt-sovits/       # (User Installed) GPT-SoVITS Engine
+│   ├── services/         # Whisper & Audio Capture
+│   ├── venv/             # Python Virtual Environment
+│   └── main.py           # Python Entry Point
 │
 └── package.json          # Root scripts for monolithic management
 ```
@@ -127,35 +162,12 @@ hana-project/
 - [x] **AI Integration**: Local LLM connection via Ollama.
 - [x] **Voice Communication**: Speech-to-Text via Whisper (Push-to-Talk).
 - [ ] **Memory System**: Context-aware interactions based on past conversations.
-
----
-
-## 🎙️ AI & Voice Setup (Phase 2)
-
-To enable Voice and AI features, you must set up the local Python environment.
-
-### 1. Prerequisites
-- **Ollama**: Download and install from [ollama.com](https://ollama.com/).
-- **Pull Model**: Run `ollama pull llama3` in your terminal.
-
-### 2. Python Environment
-The project uses a local virtual environment to handle AI processing.
-
-```bash
-# 1. Create Virtual Environment
-python -m venv python/venv
-
-# 2. Install Dependencies (Windows)
-./python/venv/Scripts/pip install -r python/requirements.txt
-```
-
-### 3. Enable in Controller
-1. Open **App** -> **Voice & AI** tab.
-2. Enable **Voice (Whisper)**.
-3. Enable **AI Responses**.
-4. Hold the Microphone button, or use the PTT to talk!
-
+- [ ] **Emotional Engine**: Automatic emotion recognition and reaction.
 
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+<div align="center">
+  <i>Created by Matthew</i>
+</div>

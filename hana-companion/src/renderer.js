@@ -4,25 +4,31 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { loadMixamoAnimation } from './mixamo.js';
 
 // --- Scene Setup ---
+// If you gaze long into the abyss, the abyss gazes also into you. 
+// Or in this case, a 3D anime girl gazes into you.
 const container = document.getElementById('canvas-container');
 const scene = new THREE.Scene();
 
 // Camera
+// The all-seeing eye
 const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 20.0);
 camera.position.set(0.0, 1.0, 5.0);
 
 // Renderer
+// Making pixels dance since 2024
 const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 container.appendChild(renderer.domElement);
 
 // Light
+// Let there be light (and shadows if we were brave enough)
 const light = new THREE.DirectionalLight(0xffffff);
 light.position.set(1.0, 1.0, 1.0).normalize();
 scene.add(light);
 
 // Clock
+// Tick tock, Mr. Wick
 const clock = new THREE.Clock();
 
 // VRM
@@ -44,10 +50,118 @@ scene.add(lookAtTarget);
 
 const IDLE_ANIMATIONS = [
     '/animations/Idle.fbx',
-    '/animations/Idle2.fbx',
+    '/animations/Idle2.fbx', // The sequel is never as good as the original
     '/animations/Idle3.fbx',
-    // '/animations/Thinking.fbx', // Optional: Add if desired
+    // '/animations/Thinking.fbx', // Thinking hurts. Disable for now.
 ];
+const THINKING_ANIMATION_URL = '/animations/Thinking.fbx';
+let isThinking = false;
+
+// --- Audio System ---
+const audioQueue = [];
+let isPlayingAudio = false;
+let currentAudio = null;
+
+// Lip Sync
+let audioContext = null;
+let analyser = null;
+let dataArray = null;
+
+function initAudioContext() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        const bufferLength = analyser.frequencyBinCount;
+        dataArray = new Uint8Array(bufferLength);
+    }
+    if (audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
+}
+
+
+function queueAudio(item) {
+    // Determine if item is string or object
+    if (typeof item === 'string') {
+        audioQueue.push({ path: item });
+    } else {
+        audioQueue.push(item);
+    }
+    processAudioQueue();
+}
+
+function processAudioQueue() {
+    if (isPlayingAudio || audioQueue.length === 0) return;
+
+    const item = audioQueue.shift();
+    const path = item.path;
+    const text = item.text;
+    
+    isPlayingAudio = true;
+
+    // Handle URL type (http vs file)
+    let src = path;
+    if (!path.startsWith('http')) {
+        src = `file://${path}`;
+    }
+
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+    }
+
+    currentAudio = new Audio(src);
+    currentAudio.preload = "auto"; // Ensure buffering starts immediately
+    currentAudio.crossOrigin = "anonymous"; // Enable CORs for analyze
+    currentAudio.volume = 1.0; 
+
+    // Hook Analyser
+    try {
+        initAudioContext();
+        const source = audioContext.createMediaElementSource(currentAudio);
+        source.connect(analyser);
+        analyser.connect(audioContext.destination);
+    } catch (e) {
+        console.error("Audio Context Error:", e);
+    }
+
+    // Subscribe to 'playing' event to show text EXACTLY when sound starts
+    // Use { once: true } to prevent re-triggering if buffering happens
+    currentAudio.addEventListener('playing', () => {
+        if (text) {
+            showDialogue(text, false, true, 'ai');
+        }
+    }, { once: true });
+    
+    currentAudio.onended = () => {
+        // Audio finished: Hide subtitle
+        if (subtitleBox) subtitleBox.style.display = 'none';
+        
+        isPlayingAudio = false;
+        currentAudio = null;
+        processAudioQueue();
+    };
+    
+    currentAudio.onerror = (e) => {
+        console.error("Audio playback error", e);
+        // Audio failed: Hide subtitle
+        if (subtitleBox) subtitleBox.style.display = 'none';
+        
+        isPlayingAudio = false;
+        currentAudio = null; // Clean up
+        processAudioQueue(); // Move to next
+    };
+
+    currentAudio.play().catch(e => {
+        console.error("Audio play failed:", e);
+        isPlayingAudio = false;
+        currentAudio = null;
+        processAudioQueue();
+    });
+}
+
+
 const loadedActions = {}; // Cache loaded actions
 let activeAction = null;
 let nextIdleSwitchTime = 0;
@@ -237,7 +351,7 @@ function onAnimationFinished(e) {
 }
 
 function updateIdleAnimation() {
-    if (!mixer || !activeAction) return;
+    if (!mixer || !activeAction || isThinking) return;
 
     // Only switch if we are currently playing the Main Idle (index 0)
     const mainIdleUrl = IDLE_ANIMATIONS[0];
@@ -330,8 +444,121 @@ function updateHeadTracking(delta) {
 }
 
 
+function startThinking() {
+    if (isThinking) return;
+    console.log("Starting Thinking Animation");
+    isThinking = true;
+
+    // Load if not loaded
+    if (!loadedActions[THINKING_ANIMATION_URL]) {
+        loadMixamoAnimation(THINKING_ANIMATION_URL, currentVrm).then(clip => {
+            const action = mixer.clipAction(clip);
+            loadedActions[THINKING_ANIMATION_URL] = action;
+            if (isThinking) playThinkingAction(action);
+        }).catch(err => {
+            console.error("Failed to load thinking animation", err);
+            isThinking = false; // Fallback
+        });
+    } else {
+        playThinkingAction(loadedActions[THINKING_ANIMATION_URL]);
+    }
+}
+
+function playThinkingAction(action) {
+    if (!action) return;
+    action.reset();
+    action.setLoop(THREE.LoopRepeat);
+    action.clampWhenFinished = false;
+    action.play();
+
+    if (activeAction) {
+        activeAction.crossFadeTo(action, 0.5, true);
+    }
+    activeAction = action;
+}
+
+function stopThinking() {
+    if (!isThinking) return;
+    console.log("Stopping Thinking Animation");
+    isThinking = false;
+
+    // Return to Main Idle
+    const mainIdleUrl = IDLE_ANIMATIONS[0];
+    const mainAction = loadedActions[mainIdleUrl];
+    
+    if (mainAction && activeAction !== mainAction) {
+        mainAction.reset();
+        mainAction.play();
+        if (activeAction) activeAction.crossFadeTo(mainAction, 0.5, true);
+        activeAction = mainAction;
+        scheduleNextIdle();
+    }
+}
+
+function updateLipSync() {
+    if (!currentVrm || !currentVrm.expressionManager) return;
+
+    let openness = 0;
+
+    if (isPlayingAudio && analyser && dataArray) {
+        analyser.getByteFrequencyData(dataArray);
+        
+        // Calculate volume average
+        let sum = 0;
+        for(let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+        }
+        const average = sum / dataArray.length;
+        
+        const sensitivity = 3.0; 
+        openness = Math.min(1.0, (average / 255.0) * sensitivity);
+        
+        if (openness < 0.05) openness = 0;
+    }
+
+    // Check if we are overriding an existing expression?
+    // Usually 'aa' is additive or absolute. 
+    // setValue sets the weight.
+    currentVrm.expressionManager.setValue('aa', openness);
+}
+
+// --- Blink State ---
+let isBlinking = false;
+let blinkClosing = true;
+let blinkWeight = 0.0;
+let nextBlinkTime = Math.random() * 3.0 + 1.0; 
+
+function updateBlink(delta) {
+    if (!currentVrm || !currentVrm.expressionManager) return;
+
+    if (!isBlinking) {
+        if (clock.elapsedTime > nextBlinkTime) {
+            isBlinking = true;
+            blinkClosing = true;
+        }
+    } else {
+        const blinkSpeed = 15.0; // Fast blink
+        if (blinkClosing) {
+            blinkWeight += blinkSpeed * delta;
+            if (blinkWeight >= 1.0) {
+                blinkWeight = 1.0;
+                blinkClosing = false;
+            }
+        } else {
+            blinkWeight -= blinkSpeed * delta;
+            if (blinkWeight <= 0.0) {
+                blinkWeight = 0.0;
+                isBlinking = false;
+                nextBlinkTime = clock.elapsedTime + 1.0 + Math.random() * 5.0; // Random interval 1-6s
+            }
+        }
+        currentVrm.expressionManager.setValue('blink', blinkWeight);
+    }
+}
+
 // --- Animation Loop ---
-const emotionPresets = ['happy', 'angry', 'sad', 'relaxed', 'surprised', 'aa', 'ih', 'ou', 'ee', 'oh', 'blink', 'blinkLeft', 'blinkRight', 'lookUp', 'lookDown', 'lookLeft', 'lookRight'];
+// Removed 'blink', 'blinkLeft', 'blinkRight' from presets so we can handle them manually
+const emotionPresets = ['happy', 'angry', 'sad', 'relaxed', 'surprised', 'aa', 'ih', 'ou', 'ee', 'oh', 'lookUp', 'lookDown', 'lookLeft', 'lookRight'];
 let currentExpressionTarget = 'neutral';
 let expressionResetTimer = null;
 
@@ -368,6 +595,8 @@ function animate() {
   updateHeadTracking(delta); // Rotates bones to face Target
   updateIdleAnimation(); // Manages animation state
   updateExpressions(delta); // Smooth expression transitions
+  updateBlink(delta); // Handle Blinking
+  updateLipSync(); // Update mouth based on audio
 
   if (currentVrm) {
       if (currentConfig.rotation) {
@@ -416,11 +645,15 @@ function applySubtitleStyles() {
     subtitleBox.style.left = `${horizontal}%`;
     subtitleBox.style.transform = 'translateX(-50%)'; 
     subtitleBox.style.textAlign = 'center';
+    subtitleBox.style.zIndex = '9999'; // Ensure it's on top of everything
+    subtitleBox.style.pointerEvents = 'none'; // Click-through
 }
 
 function showDialogue(text, isUser = false, persistent = false, source = 'ai') {
     if (!subtitleBox) return;
     
+    console.log(`[Dialogue] Showing (${source}):`, text);
+
     currentSubtitleSource = source;
 
     // Reset previous
@@ -438,7 +671,7 @@ function showDialogue(text, isUser = false, persistent = false, source = 'ai') {
     const words = text.split(' ');
     let delay = 0;
     
-    words.forEach((word, index) => {
+    words.forEach((word) => {
         const span = document.createElement('span');
         span.textContent = word + ' ';
         span.style.opacity = '0';
@@ -500,17 +733,56 @@ ws.onmessage = (event) => {
     } else if (command.type === 'ai-event') {
         const { subtype, payload } = command;
         if (subtype === 'transcription') {
+            startThinking(); // Start animation
             showDialogue(payload.text, true, false, 'user'); // User text
         } else if (subtype === 'ai:response') {
-            showDialogue(payload.text, false, false, 'ai'); // AI text
+            // Only show immediately if TTS is NOT enabled.
+            // If TTS is enabled, we wait for 'tts:audio' to sync the text.
+            const ttsEnabled = currentConfig.tts && currentConfig.tts.enabled;
+            if (!ttsEnabled) {
+                stopThinking(); // Stop if no audio coming
+                showDialogue(payload.text, false, false, 'ai'); 
+            }
         } else if (subtype === 'status') {
             console.log("AI Status:", payload.text);
             if (payload.text.includes("Initializing") || payload.text.includes("Error")) {
                  showDialogue(`[System: ${payload.text}]`, false, false, 'system');
+                 stopThinking(); // Stop on error/status
             }
         } else if (subtype === 'error') {
             console.error("AI Error:", payload.text);
+            stopThinking();
             showDialogue(`[Error: ${payload.text}]`, false, false, 'error');
+        } else if (subtype === 'tts:audio') {
+            // Deprecated path, handled below strictly
+        }
+    } else if (command.type === 'tts:audio') {
+        stopThinking(); // Audio received, stop thinking
+        const { result, text } = command.payload;
+        if (result) {
+            console.log("Queueing TTS Audio:", result);
+            // Pass text to queue mechanism for sync
+            queueAudio({ path: result, text: text });
+        }
+    } else if (command.type === 'ptt-status') {
+        const { active } = command.payload;
+        const recIndicator = document.getElementById('rec-indicator');
+        if (recIndicator) {
+             recIndicator.style.display = active ? 'flex' : 'none';
+             if (active) {
+                // Find text node to update to "Listening..."
+                let foundText = false;
+                recIndicator.childNodes.forEach(n => {
+                    if (n.nodeType === 3 && n.textContent.trim().length > 0) {
+                        n.textContent = " Listening..."; // Add leading space for spacing
+                        foundText = true;
+                    }
+                });
+                // If no text node found (weird), append it
+                if (!foundText) {
+                    recIndicator.appendChild(document.createTextNode(" Listening..."));
+                }
+             }
         }
     } else if (command.type === 'debug-command') {
         if (command.command === 'play-animation') {
