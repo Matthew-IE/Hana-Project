@@ -22,6 +22,8 @@ def main():
     
     try:
         # Loading whisper might take a moment. Or forever. Who knows.
+        # Use 'base.en' for balance or 'tiny.en' for speed if needed.
+        # FUTURE: Make this configurable via args/config
         whisper = WhisperService("base.en") 
         ollama = OllamaClient()
         input_service = InputService()

@@ -586,16 +586,32 @@ function updateExpressions(delta) {
     currentVrm.expressionManager.update();
 }
 
+// Optimization: Frame Rate Limiter
+// We don't need to render a cute anime girl at 500 FPS while your GPU cries.
+const FPS_LIMIT = 60;
+const FRAME_INTERVAL = 1 / FPS_LIMIT;
+let frameDelta = 0;
+
 function animate() {
   requestAnimationFrame(animate);
+
   const delta = clock.getDelta();
-  if (mixer) mixer.update(delta);
+  frameDelta += delta;
+
+  // Skip frame if we are too fast
+  if (frameDelta < FRAME_INTERVAL) return;
+
+  // Cap delta to prevent explosion after long pauses
+  const timeStep = Math.min(frameDelta, 0.1); 
+  frameDelta = frameDelta % FRAME_INTERVAL; // Carry over remainder
+
+  if (mixer) mixer.update(timeStep);
   
-  updateLookAt(delta); // Updates the Target position
-  updateHeadTracking(delta); // Rotates bones to face Target
+  updateLookAt(timeStep); // Updates the Target position
+  updateHeadTracking(timeStep); // Rotates bones to face Target
   updateIdleAnimation(); // Manages animation state
-  updateExpressions(delta); // Smooth expression transitions
-  updateBlink(delta); // Handle Blinking
+  updateExpressions(timeStep); // Smooth expression transitions
+  updateBlink(timeStep); // Handle Blinking
   updateLipSync(); // Update mouth based on audio
 
   if (currentVrm) {
@@ -604,7 +620,7 @@ function animate() {
           currentVrm.scene.rotation.y = baseRotation.y + (currentConfig.rotation.y || 0);
           currentVrm.scene.rotation.z = baseRotation.z + (currentConfig.rotation.z || 0);
       }
-      currentVrm.update(delta);
+      currentVrm.update(timeStep);
   }
   renderer.render(scene, camera);
 }
