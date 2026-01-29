@@ -10,22 +10,27 @@ class AudioCapture:
         self.channels = channels
         self.recording = False
         self.stream_running = False
-        self.audio_queue = queue.Queue()
+        self.audio_queue = queue.Queue(maxsize=500)  # Limit queue size
         self.stream = None
         self.device_index = None
-        # Attempt to start stream on default device immediately if possible? 
-        # Or wait for explicit set_device. 
-        # User said "make usage load on startup". So we should verify device info and start stream.
+        
+        # Silence detection thresholds
+        self.silence_threshold = 0.01  # RMS threshold for silence
+        self.min_speech_frames = 5     # Minimum frames to consider as speech
+        self.consecutive_silence = 0
+        self.speech_detected = False
+        
+        # Attempt to start stream on default device
         try:
-             self._start_stream()
+            self._start_stream()
         except:
-             pass
+            pass
 
     def set_device(self, device_index):
         if self.device_index == device_index and self.stream_running:
-             return # No change
+            return  # No change
              
-        print(f"Setting audio device to index: {device_index}", file=sys.stderr)
+        # print(f"Setting audio device to index: {device_index}", file=sys.stderr)
         self.device_index = device_index
         self._start_stream()
 
@@ -41,34 +46,43 @@ class AudioCapture:
             self.stream_running = False
 
         def callback(indata, frames, time, status):
-            if status:
-                # print(f"Audio status: {status}", file=sys.stderr)
-                pass # Suppress status spam
-            if self.recording:
-                self.audio_queue.put(indata.copy())
+            if not self.recording:
+                return
+                
+            # Quick RMS calculation for silence detection
+            rms = np.sqrt(np.mean(indata ** 2))
+            
+            if rms > self.silence_threshold:
+                self.speech_detected = True
+                self.consecutive_silence = 0
+                try:
+                    self.audio_queue.put_nowait(indata.copy())
+                except queue.Full:
+                    pass  # Drop frame if queue is full
+            elif self.speech_detected:
+                # Still capture some silence after speech for natural ending
+                self.consecutive_silence += 1
+                if self.consecutive_silence < 15:  # ~0.5s of trailing silence
+                    try:
+                        self.audio_queue.put_nowait(indata.copy())
+                    except queue.Full:
+                        pass
 
         try:
-            device_info = None
-            if self.device_index is not None:
-                 device_info = f"Index {self.device_index}"
-            else:
-                 device_info = "Default Device"
-
-            print(f"Initializing audio stream on: {device_info}", file=sys.stderr)
-            
             self.stream = sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 callback=callback,
                 dtype='float32',
-                device=self.device_index
+                device=self.device_index,
+                blocksize=512,      # Smaller blocks for lower latency
+                latency='low'       # Request low latency
             )
             self.stream.start()
             self.stream_running = True
         except Exception as e:
             print(f"Failed to initialize audio stream: {e}", file=sys.stderr)
             self.stream_running = False
-            # Don't raise, just log. System can try to recover or user can change device.
 
     def list_devices(self):
         devices = []
@@ -91,16 +105,23 @@ class AudioCapture:
         if self.recording:
             return
             
-        # If stream isn't running (maybe failed init or closed), try to restart it
+        # If stream isn't running, try to restart it
         if not self.stream_running:
-             self._start_stream()
-             if not self.stream_running:
-                 print("Error: Cannot start recording, stream is down.", file=sys.stderr)
-                 return
+            self._start_stream()
+            if not self.stream_running:
+                return
 
-        self.audio_queue = queue.Queue() # Clear queue
+        # Clear queue efficiently
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        # Reset silence detection state
+        self.speech_detected = False
+        self.consecutive_silence = 0
         self.recording = True
-        # Stream is already running and feeding callback, which will now start pushing to queue
 
     def stop_capture(self):
         """Immediately stops the recording flag."""
@@ -110,15 +131,16 @@ class AudioCapture:
         """Retrieves and concatenates audio data. Call this after stop_capture()."""
         data_blocks = []
         try:
-             while not self.audio_queue.empty():
+            while not self.audio_queue.empty():
                 data_blocks.append(self.audio_queue.get_nowait())
         except queue.Empty:
             pass
         
         if not data_blocks:
             return None
-            
-        return np.concatenate(data_blocks, axis=0)
+        
+        # Efficient concatenation
+        return np.concatenate(data_blocks, axis=0).flatten()
 
     def stop(self):
         if not self.recording:

@@ -12,7 +12,7 @@ class WhisperService:
             # Check for CUDA availability
             if torch.cuda.is_available():
                 self.device = "cuda"
-                print("Attempting to load OpenAI Whisper on CUDA...", file=sys.stderr)
+                print("Loading OpenAI Whisper on CUDA...", file=sys.stderr)
             else:
                 self.device = "cpu"
                 print("CUDA not available. Loading OpenAI Whisper on CPU...", file=sys.stderr)
@@ -35,11 +35,9 @@ class WhisperService:
         
         # Ensure data is float32
         if audio_data.dtype != np.float32:
-             audio_data = audio_data.astype(np.float32)
+            audio_data = audio_data.astype(np.float32)
 
-        # Transcribe directly using the OpenAI Whisper transcribe method
-        # It handles normalization and padding internally
-        # fp16=False suppresses the warning on CPU
+        # Transcribe using OpenAI Whisper
         is_fp16 = (self.device == "cuda")
         result = self.model.transcribe(audio_data, fp16=is_fp16)
         

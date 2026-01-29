@@ -31,6 +31,18 @@ export function AIControls({ config, updateConfig }) {
                     <p className="text-xs text-muted-foreground">Make sure you have pulled this model in Ollama (`ollama pull llama3`)</p>
                 </div>
 
+                <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                        <Label htmlFor="expressive-anim">Expressive Animations (Beta)</Label>
+                        <p className="text-xs text-muted-foreground">AI will trigger procedural gestures (Nod, Shake, Bounce)</p>
+                    </div>
+                    <Switch 
+                        id="expressive-anim"
+                        checked={config.expressiveAnimation || false} 
+                        onCheckedChange={(c) => updateConfig({ expressiveAnimation: c })} 
+                    />
+                </div>
+
                 <div className="space-y-2">
                     <Label>System Prompt (Personality)</Label>
                     <Textarea 

@@ -1,9 +1,20 @@
+# Speech Recognition
 openai-whisper
+
+# Audio processing
 sounddevice
 numpy
-requests
 scipy
+
+# HTTP client
+requests
+
+# PyTorch (install with CUDA for GPU acceleration)
 torch
+
+# Input handling
 keyboard
 mouse
+
+# Optional integrations
 gradio_client

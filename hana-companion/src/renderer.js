@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { loadMixamoAnimation } from './mixamo.js';
+import { ProceduralAnimator } from './animation/ProceduralAnimator.js';
 
 // --- Scene Setup ---
 // If you gaze long into the abyss, the abyss gazes also into you. 
@@ -14,28 +15,339 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 20.0);
 camera.position.set(0.0, 1.0, 5.0);
 
-// Renderer
-// Making pixels dance since 2024
-const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+// Renderer - OPTIMIZED for performance
+// Adaptive pixel ratio based on device capability
+const getOptimalPixelRatio = () => {
+    const dpr = window.devicePixelRatio || 1;
+    // Cap at 1.5 for better performance on high-DPI displays
+    // Most users won't notice difference above 1.5 for VRM models
+    return Math.min(dpr, 1.5);
+};
+
+const renderer = new THREE.WebGLRenderer({ 
+    alpha: true, 
+    antialias: false,  // Disable AA - use FXAA post-process if needed for better perf
+    powerPreference: 'high-performance',  // Request high-performance GPU
+    stencil: false,    // Not needed for simple VRM rendering
+    depth: true
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(getOptimalPixelRatio());
+
+// WebGL optimizations
+renderer.physicallyCorrectLights = false;  // Disable PBR for speed
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;  // Skip tone mapping
+
 container.appendChild(renderer.domElement);
 
 // Light
 // Let there be light (and shadows if we were brave enough)
-const light = new THREE.DirectionalLight(0xffffff);
+const light = new THREE.DirectionalLight(0xffffff, 1.0);
 light.position.set(1.0, 1.0, 1.0).normalize();
 scene.add(light);
+
+// Add ambient light for toon shading
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+scene.add(ambientLight);
 
 // Clock
 // Tick tock, Mr. Wick
 const clock = new THREE.Clock();
+
+// --- Toon Shading ---
+let currentShadingMode = 'default';
+let originalMaterials = new Map(); // Store original materials for reverting
+let currentShadingConfig = {
+    mode: 'default',
+    lightIntensity: 1.0,
+    ambientIntensity: 0.4,
+    shadowDarkness: 120,
+    saturationBoost: 1.0,
+    lightX: 1.0,
+    lightY: 1.0,
+    lightZ: 1.0,
+};
+
+// Create a gradient map based on shadowDarkness setting
+function createToonGradientMap(shadowDarkness = 120) {
+    // 2-tone sharp gradient for cel shading effect
+    // shadowDarkness: 0 = pitch black shadows, 255 = no shadow difference
+    const shadowValue = Math.max(0, Math.min(255, Math.round(shadowDarkness)));
+    
+    // Create a small texture with shadow and lit values (RGBA format for Three.js 0.160+)
+    const size = 4;
+    const data = new Uint8Array(size * 4); // RGBA format
+    
+    // First half is shadow, second half is full lit
+    for (let i = 0; i < size; i++) {
+        const idx = i * 4;
+        if (i < size / 2) {
+            // Shadow zone
+            data[idx] = shadowValue;     // R
+            data[idx + 1] = shadowValue; // G
+            data[idx + 2] = shadowValue; // B
+            data[idx + 3] = 255;         // A
+        } else {
+            // Lit zone
+            data[idx] = 255;     // R
+            data[idx + 1] = 255; // G
+            data[idx + 2] = 255; // B
+            data[idx + 3] = 255; // A
+        }
+    }
+    
+    const gradientMap = new THREE.DataTexture(data, size, 1, THREE.RGBAFormat);
+    gradientMap.minFilter = THREE.NearestFilter;
+    gradientMap.magFilter = THREE.NearestFilter;
+    gradientMap.needsUpdate = true;
+    
+    return gradientMap;
+}
+
+// Custom toon material with configurable settings
+function createToonMaterial(originalMaterial, config) {
+    let baseColor = new THREE.Color(0xffffff);
+    let mainTexture = null;
+    let alphaMap = null;
+    let alphaTest = 0;
+    let transparent = false;
+    let opacity = 1.0;
+    let side = THREE.FrontSide;
+    
+    // Extract properties from various material types (including ShaderMaterial/MToonMaterial)
+    if (originalMaterial.color) {
+        baseColor = originalMaterial.color.clone();
+    } else if (originalMaterial.uniforms?.litFactor?.value) {
+        // MToonMaterial stores color in uniforms
+        baseColor = originalMaterial.uniforms.litFactor.value.clone();
+    } else if (originalMaterial.uniforms?.diffuse?.value) {
+        baseColor = originalMaterial.uniforms.diffuse.value.clone();
+    }
+    
+    // Get texture
+    if (originalMaterial.map) {
+        mainTexture = originalMaterial.map;
+    } else if (originalMaterial.uniforms?.map?.value) {
+        mainTexture = originalMaterial.uniforms.map.value;
+    }
+    
+    // Get alpha properties
+    if (originalMaterial.alphaMap) {
+        alphaMap = originalMaterial.alphaMap;
+    } else if (originalMaterial.uniforms?.alphaMap?.value) {
+        alphaMap = originalMaterial.uniforms.alphaMap.value;
+    }
+    
+    alphaTest = originalMaterial.alphaTest || 0;
+    transparent = originalMaterial.transparent || alphaTest > 0;
+    opacity = originalMaterial.opacity !== undefined ? originalMaterial.opacity : 1.0;
+    side = originalMaterial.side !== undefined ? originalMaterial.side : THREE.FrontSide;
+    
+    const shadowDark = config.shadowDarkness !== undefined ? config.shadowDarkness : 120;
+    const satBoost = config.saturationBoost || 1.0;
+    
+    const toonMaterial = new THREE.MeshToonMaterial({
+        color: baseColor,
+        map: mainTexture,
+        gradientMap: createToonGradientMap(shadowDark),
+        side: side,
+        transparent: transparent,
+        opacity: opacity,
+        alphaTest: alphaTest,
+    });
+    
+    if (alphaMap) {
+        toonMaterial.alphaMap = alphaMap;
+    }
+    
+    // Inject saturation adjustment into the shader
+    if (satBoost !== 1.0) {
+        toonMaterial.onBeforeCompile = (shader) => {
+            shader.uniforms.saturationBoost = { value: satBoost };
+            
+            // Add uniform declaration
+            shader.fragmentShader = 'uniform float saturationBoost;\n' + shader.fragmentShader;
+            
+            // Inject saturation adjustment before final output
+            shader.fragmentShader = shader.fragmentShader.replace(
+                '#include <dithering_fragment>',
+                `
+                // Saturation boost
+                float gray = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
+                gl_FragColor.rgb = mix(vec3(gray), gl_FragColor.rgb, saturationBoost);
+                
+                #include <dithering_fragment>
+                `
+            );
+        };
+        // Needed for onBeforeCompile to take effect on each instance
+        toonMaterial.customProgramCacheKey = () => `toon_sat_${satBoost}`;
+    }
+    
+    return toonMaterial;
+}
+
+// Check if a mesh/material should be skipped for toon shading
+function shouldSkipToonShading(object, material) {
+    const name = (object.name || '').toLowerCase();
+    const matName = (material.name || '').toLowerCase();
+    
+    // Skip eyes, face details, and other special parts
+    const skipPatterns = [
+        'eye', 'iris', 'pupil', 'cornea', 'sclera',
+        'highlight', 'reflection', 'glow', 'emission',
+        'tear', 'teeth', 'tongue', 'mouth_inside',
+        'face_shadow', 'blush', 'cheek'
+    ];
+    
+    for (const pattern of skipPatterns) {
+        if (name.includes(pattern) || matName.includes(pattern)) {
+            return true;
+        }
+    }
+    
+    // Skip emissive materials (often used for eyes) - but only if strongly emissive
+    if (material.emissive && material.emissive.getHex() > 0x333333) {
+        return true;
+    }
+    
+    return false;
+}
+
+function applyToonShading(vrm, config) {
+    if (!vrm || !vrm.scene) return;
+    
+    let appliedCount = 0;
+    let skippedCount = 0;
+    
+    vrm.scene.traverse((object) => {
+        if (object.isMesh && object.material) {
+            const materials = Array.isArray(object.material) ? object.material : [object.material];
+            const newMaterials = [];
+            
+            materials.forEach((mat, index) => {
+                const key = `${object.uuid}_${index}`;
+                if (!originalMaterials.has(key)) {
+                    originalMaterials.set(key, mat);
+                }
+                
+                // Log material types for debugging
+                console.log(`[Toon] Material: ${mat.name || 'unnamed'}, type: ${mat.type}, object: ${object.name}`);
+                
+                // Skip special materials (eyes, highlights, etc.)
+                if (shouldSkipToonShading(object, mat)) {
+                    newMaterials.push(mat); // Keep original
+                    skippedCount++;
+                } else {
+                    newMaterials.push(createToonMaterial(mat, config));
+                    appliedCount++;
+                }
+            });
+            
+            object.material = newMaterials.length === 1 ? newMaterials[0] : newMaterials;
+        }
+    });
+    
+    console.log(`[Renderer] Toon shading applied to ${appliedCount} materials (skipped ${skippedCount}), shadowDarkness=${config.shadowDarkness}, saturationBoost=${config.saturationBoost}`);
+}
+
+function removeToonShading(vrm) {
+    if (!vrm || !vrm.scene) return;
+    
+    vrm.scene.traverse((object) => {
+        if (object.isMesh && object.material) {
+            const materials = Array.isArray(object.material) ? object.material : [object.material];
+            const restoredMaterials = [];
+            
+            materials.forEach((mat, index) => {
+                const key = `${object.uuid}_${index}`;
+                if (originalMaterials.has(key)) {
+                    restoredMaterials.push(originalMaterials.get(key));
+                } else {
+                    restoredMaterials.push(mat);
+                }
+            });
+            
+            object.material = restoredMaterials.length === 1 ? restoredMaterials[0] : restoredMaterials;
+        }
+    });
+    
+    console.log('[Renderer] Toon shading removed');
+}
+
+// Update lighting based on config
+function updateLighting(config) {
+    if (config.lightIntensity !== undefined) {
+        light.intensity = config.lightIntensity;
+    }
+    if (config.ambientIntensity !== undefined) {
+        ambientLight.intensity = config.ambientIntensity;
+    }
+    if (config.lightX !== undefined || config.lightY !== undefined || config.lightZ !== undefined) {
+        const x = config.lightX !== undefined ? config.lightX : 1.0;
+        const y = config.lightY !== undefined ? config.lightY : 1.0;
+        const z = config.lightZ !== undefined ? config.lightZ : 1.0;
+        light.position.set(x, y, z).normalize();
+    }
+}
+
+// Main function to update all shading settings
+function updateShading(config) {
+    if (!config) return;
+    
+    const newConfig = { ...currentShadingConfig, ...config };
+    const modeChanged = newConfig.mode !== currentShadingMode;
+    
+    // Check if toon-specific settings changed (compare BEFORE updating currentShadingConfig)
+    const settingsChanged = (
+        newConfig.shadowDarkness !== currentShadingConfig.shadowDarkness ||
+        newConfig.saturationBoost !== currentShadingConfig.saturationBoost
+    );
+    
+    console.log('[Shading] Update:', {
+        mode: newConfig.mode,
+        modeChanged,
+        settingsChanged,
+        shadowDarkness: newConfig.shadowDarkness,
+        saturationBoost: newConfig.saturationBoost,
+        hasVrm: !!currentVrm
+    });
+    
+    // Always update lighting first
+    updateLighting(newConfig);
+    
+    // Handle mode changes
+    if (modeChanged) {
+        console.log('[Shading] Mode changed to:', newConfig.mode);
+        currentShadingMode = newConfig.mode;
+        currentShadingConfig = newConfig;
+        
+        if (currentVrm) {
+            if (newConfig.mode === 'toon') {
+                applyToonShading(currentVrm, newConfig);
+            } else {
+                removeToonShading(currentVrm);
+            }
+        }
+    } else if (settingsChanged && currentShadingMode === 'toon' && currentVrm) {
+        // Re-apply toon shading with new settings
+        console.log('[Shading] Toon settings changed, re-applying...');
+        currentShadingConfig = newConfig;
+        removeToonShading(currentVrm);
+        applyToonShading(currentVrm, newConfig);
+    } else {
+        currentShadingConfig = newConfig;
+    }
+}
 
 // VRM
 let currentVrm = undefined;
 let mixer = undefined;
 let lastLoadedPath = '';
 let baseRotation = new THREE.Euler();
+let proceduralAnimator = new ProceduralAnimator(); // Initialize Animator
+
 let currentConfig = {
     scale: 1.0,
     position: { x: 0, y: 0 },
@@ -69,9 +381,13 @@ let dataArray = null;
 
 function initAudioContext() {
     if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            latencyHint: 'interactive',  // Lower latency
+            sampleRate: 44100  // Standard sample rate
+        });
         analyser = audioContext.createAnalyser();
-        analyser.fftSize = 256;
+        analyser.fftSize = 128;  // Reduced from 256 - faster FFT
+        analyser.smoothingTimeConstant = 0.5;  // Faster response
         const bufferLength = analyser.frequencyBinCount;
         dataArray = new Uint8Array(bufferLength);
     }
@@ -96,7 +412,14 @@ function processAudioQueue() {
 
     const item = audioQueue.shift();
     const path = item.path;
-    const text = item.text;
+    let text = item.text;
+    
+    // Parse tags for Procedural Animation if enabled
+    if (currentConfig.expressiveAnimation) {
+        // Trigger animations immediately (or maybe timed?)
+        // For now, trigger immediately before speech starts.
+        text = proceduralAnimator.parseAndTrigger(text);
+    }
     
     isPlayingAudio = true;
 
@@ -265,8 +588,21 @@ loader.register((parser) => {
 });
 
 function loadVRM(url) {
+  if (!url) return;
+  
+  let finalUrl = url;
+  // Handle Windows Absolute Paths if passed directly (Draging & Dropping files)
+  if (!finalUrl.startsWith('http') && !finalUrl.startsWith('file://')) {
+       // If it has a drive letter or starts with double backslash
+       if (/^[a-zA-Z]:/.test(finalUrl) || finalUrl.startsWith('\\\\')) {
+           finalUrl = `file://${finalUrl.replace(/\\/g, '/')}`;
+       }
+  }
+
+  console.log(`[Renderer] Loading VRM: ${finalUrl}`);
+
   loader.load(
-    url,
+    finalUrl,
     (gltf) => {
       const vrm = gltf.userData.vrm;
       
@@ -281,12 +617,20 @@ function loadVRM(url) {
       currentVrm = vrm;
       scene.add(vrm.scene);
       
+      // Apply shading based on current config
+      if (currentShadingMode === 'toon') {
+          applyToonShading(vrm, currentShadingConfig);
+      }
+      
       mixer = new THREE.AnimationMixer(currentVrm.scene);
       mixer.addEventListener('finished', onAnimationFinished);
       
       if (vrm.lookAt) {
         vrm.lookAt.target = lookAtTarget;
       }
+      
+      // Pass VRM to procedural animator
+      proceduralAnimator.setVRM(currentVrm);
 
       updateModelTransform();
       preloadIdleAnimations(); // Start loading all idles
@@ -586,11 +930,28 @@ function updateExpressions(delta) {
     currentVrm.expressionManager.update();
 }
 
-// Optimization: Frame Rate Limiter
-// We don't need to render a cute anime girl at 500 FPS while your GPU cries.
-const FPS_LIMIT = 60;
-const FRAME_INTERVAL = 1 / FPS_LIMIT;
+// Optimization: Adaptive Frame Rate Limiter
+// Target 60 FPS when active, drop to 30 FPS when idle (no animation/audio)
+let FPS_LIMIT = 60;
+const FRAME_INTERVAL_60 = 1 / 60;
+const FRAME_INTERVAL_30 = 1 / 30;
 let frameDelta = 0;
+let isIdleMode = false;
+let idleTimeout = null;
+
+// Track activity for adaptive FPS
+function setActiveMode() {
+    if (isIdleMode) {
+        isIdleMode = false;
+        FPS_LIMIT = 60;
+    }
+    // Reset idle timer
+    if (idleTimeout) clearTimeout(idleTimeout);
+    idleTimeout = setTimeout(() => {
+        isIdleMode = true;
+        FPS_LIMIT = 30; // Drop to 30 FPS when idle
+    }, 5000); // 5 seconds of no activity
+}
 
 function animate() {
   requestAnimationFrame(animate);
@@ -598,21 +959,44 @@ function animate() {
   const delta = clock.getDelta();
   frameDelta += delta;
 
+  const frameInterval = isIdleMode ? FRAME_INTERVAL_30 : FRAME_INTERVAL_60;
+
   // Skip frame if we are too fast
-  if (frameDelta < FRAME_INTERVAL) return;
+  if (frameDelta < frameInterval) return;
 
   // Cap delta to prevent explosion after long pauses
   const timeStep = Math.min(frameDelta, 0.1); 
-  frameDelta = frameDelta % FRAME_INTERVAL; // Carry over remainder
+  frameDelta = frameDelta % frameInterval; // Carry over remainder
 
+  // Only update mixer if animation is playing
   if (mixer) mixer.update(timeStep);
   
-  updateLookAt(timeStep); // Updates the Target position
-  updateHeadTracking(timeStep); // Rotates bones to face Target
+  // Skip expensive updates if idle and not looking at cursor
+  if (!isIdleMode || currentConfig.lookAtCursor) {
+      updateLookAt(timeStep); // Updates the Target position
+      updateHeadTracking(timeStep); // Rotates bones to face Target
+  }
+  
   updateIdleAnimation(); // Manages animation state
-  updateExpressions(timeStep); // Smooth expression transitions
+  
+  // Reduce expression update frequency when idle
+  if (!isIdleMode || frameDelta < 0.05) {
+      updateExpressions(timeStep); // Smooth expression transitions
+  }
+  
   updateBlink(timeStep); // Handle Blinking
-  updateLipSync(); // Update mouth based on audio
+  
+  // Only update lip sync when playing audio
+  if (isPlayingAudio) {
+      updateLipSync(); // Update mouth based on audio
+      setActiveMode(); // Keep active during audio playback
+  }
+  
+  // Apply Procedural Animation Layer
+  if (proceduralAnimator.activeGestures.length > 0) {
+      proceduralAnimator.update(timeStep);
+      setActiveMode();
+  }
 
   if (currentVrm) {
       if (currentConfig.rotation) {
@@ -730,12 +1114,13 @@ ws.onmessage = (event) => {
             loadVRM(config.vrmPath);
         }
 
-        
-        if (config.vrmPath && config.vrmPath !== lastLoadedPath) {
-            lastLoadedPath = config.vrmPath;
-            loadVRM(config.vrmPath);
-        }
         updateModelTransform();
+        
+        // Handle shading config updates
+        if (config.shading) {
+            console.log('[Renderer] Shading config update:', config.shading);
+            updateShading(config.shading);
+        }
         
         if (config.showBorder !== undefined) {
              document.body.style.border = config.showBorder ? '2px dashed #ff3333' : 'none';

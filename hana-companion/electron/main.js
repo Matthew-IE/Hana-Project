@@ -38,10 +38,22 @@ let appConfig = {
   eyeTrackingSensitivity: 0.1,
   randomLookInterval: { min: 1.0, max: 4.0 },
   randomLookRadius: 5.0,
+  // Shading configuration
+  shading: {
+    mode: 'default',        // 'default' or 'toon'
+    lightIntensity: 1.0,    // Main directional light
+    ambientIntensity: 0.4,  // Ambient light fill
+    shadowDarkness: 120,    // 0-255, lower = darker toon shadows
+    saturationBoost: 1.0,   // Color saturation multiplier
+    lightX: 1.0,            // Light direction X
+    lightY: 1.0,            // Light direction Y
+    lightZ: 1.0,            // Light direction Z
+  },
   voiceEnabled: true,
   pushToTalk: false, // Default off
   pushToTalkKey: 'v', // Default key, V for Voice (Original, I know)
   aiEnabled: true,
+  expressiveAnimation: false, // New Advanced Feature
   ollamaModel: "llama3",
   audioDeviceIndex: null, // Default to system default
   systemPrompt: "You are Hana, a helpful and cute desktop companion.",
@@ -106,9 +118,10 @@ if (fs.existsSync(CONFIG_FILE)) {
     appConfig = { 
         ...appConfig, 
         ...saved,
-        // Ensure nested TTS config is merged, or we might lose the magic spells
+        // Ensure nested configs are merged properly
         tts: { ...appConfig.tts, ...(saved.tts || {}) },
-        subtitle: { ...appConfig.subtitle, ...(saved.subtitle || {}) }
+        subtitle: { ...appConfig.subtitle, ...(saved.subtitle || {}) },
+        shading: { ...appConfig.shading, ...(saved.shading || {}) }
     };
     if (!appConfig.windowBounds) appConfig.windowBounds = { width: 400, height: 600 };
     // Set proper defaults if missing
@@ -122,11 +135,20 @@ if (fs.existsSync(CONFIG_FILE)) {
 }
 
 let saveTimeout = null;
+let lastSaveHash = null;  // Track config changes to avoid redundant saves
+
 function saveConfig() {
   if (saveTimeout) clearTimeout(saveTimeout);
-  // Debounce save because the disk is slow and I am impatient
+  // Debounce save with longer delay for better batching
   saveTimeout = setTimeout(() => {
       try {
+          // Create hash of config to avoid redundant disk writes
+          const configStr = JSON.stringify(appConfig);
+          const hash = configStr.length + configStr.slice(0, 100);  // Simple hash
+          if (hash === lastSaveHash) return;  // Skip if unchanged
+          
+          lastSaveHash = hash;
+          
           // Normalize legacy keys
           appConfig.pushToTalkKey = appConfig.voice.pttKey;
           appConfig.pushToTalk = appConfig.voice.mode === 'ptt';
@@ -136,7 +158,30 @@ function saveConfig() {
       } catch (e) {
           console.error("Failed to save config", e);
       }
-  }, 1000);
+  }, 2000);  // Increased to 2s for better batching
+}
+
+// Throttled broadcast to reduce WebSocket spam
+let broadcastQueue = new Map();
+let broadcastTimeout = null;
+
+function broadcast(data) {
+    // Merge same-type messages, keeping latest
+    broadcastQueue.set(data.type, data);
+    
+    if (!broadcastTimeout) {
+        broadcastTimeout = setTimeout(() => {
+            broadcastQueue.forEach((msg) => {
+                wss.clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(JSON.stringify(msg));
+                    }
+                });
+            });
+            broadcastQueue.clear();
+            broadcastTimeout = null;
+        }, 16);  // ~60fps max broadcast rate
+    }
 }
 
 // --- PTT Logic (Akari Port) ---
@@ -321,13 +366,7 @@ serverApp.get('/tts-stream/:id', async (req, res) => {
 const server = http.createServer(serverApp);
 const wss = new WebSocket.Server({ server });
 
-function broadcast(data) {
-    wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(data));
-        }
-    });
-}
+// broadcast function moved above for throttling
 
 wss.on('connection', (ws) => {
     ws.send(JSON.stringify({ type: 'config-update', payload: appConfig }));
@@ -335,12 +374,30 @@ wss.on('connection', (ws) => {
         try {
             const data = JSON.parse(message);
             if (data.type === 'update-config') {
-                appConfig = { ...appConfig, ...data.payload };
+                // Deep merge nested objects to preserve existing properties
+                const payload = data.payload;
+                if (payload.shading) {
+                    payload.shading = { ...appConfig.shading, ...payload.shading };
+                }
+                if (payload.tts) {
+                    payload.tts = { ...appConfig.tts, ...payload.tts };
+                }
+                if (payload.subtitle) {
+                    payload.subtitle = { ...appConfig.subtitle, ...payload.subtitle };
+                }
+                if (payload.position) {
+                    payload.position = { ...appConfig.position, ...payload.position };
+                }
+                if (payload.rotation) {
+                    payload.rotation = { ...appConfig.rotation, ...payload.rotation };
+                }
+                
+                appConfig = { ...appConfig, ...payload };
                 
                 // Sync legacy fields for PTT logic (Handle both flat and nested updates)
-                const voiceUpdate = data.payload.voice || {};
-                const flatPttKey = data.payload.pushToTalkKey;
-                const flatPttEnabled = data.payload.pushToTalk;
+                const voiceUpdate = payload.voice || {};
+                const flatPttKey = payload.pushToTalkKey;
+                const flatPttEnabled = payload.pushToTalk;
 
                 if (flatPttKey !== undefined) {
                     if (!appConfig.voice) appConfig.voice = {};
@@ -407,6 +464,23 @@ wss.on('connection', (ws) => {
 
 serverApp.get('/api/config', (req, res) => res.json(appConfig));
 serverApp.post('/api/config', (req, res) => {
+    // Deep merge nested objects to preserve existing properties
+    if (req.body.shading) {
+        req.body.shading = { ...appConfig.shading, ...req.body.shading };
+    }
+    if (req.body.tts) {
+        req.body.tts = { ...appConfig.tts, ...req.body.tts };
+    }
+    if (req.body.subtitle) {
+        req.body.subtitle = { ...appConfig.subtitle, ...req.body.subtitle };
+    }
+    if (req.body.position) {
+        req.body.position = { ...appConfig.position, ...req.body.position };
+    }
+    if (req.body.rotation) {
+        req.body.rotation = { ...appConfig.rotation, ...req.body.rotation };
+    }
+    
     appConfig = { ...appConfig, ...req.body };
     saveConfig();
     broadcast({ type: 'config-update', payload: appConfig });
@@ -462,15 +536,14 @@ function createWindow() {
   });
 
   // Aggressively force 'screen-saver' level to stay on top of fullscreen games
-  // This is a battle of wills between Hana and your AAA games. Hana usually wins.
-  // (Unless it's Exclusive Fullscreen, then Direct3D wins. We can't cheat physics.)
+  // Reduced polling frequency to lower CPU usage
   const keepOnTop = () => {
       if (mainWindow && appConfig.alwaysOnTop) {
           mainWindow.setAlwaysOnTop(true, "screen-saver");
       }
   };
   keepOnTop();
-  setInterval(keepOnTop, 4000); // 4s interval to not be too annoying to the OS
+  setInterval(keepOnTop, 10000); // Increased to 10s to reduce CPU overhead
 
   const saveBounds = () => {
     if (mainWindow) {
@@ -711,10 +784,28 @@ pythonManager.on('message', (msg) => {
     if (msg.type === 'transcription') {
         const text = msg.payload.text;
         if (text && appConfig.aiEnabled) {
+             let prompt = appConfig.systemPrompt;
+             
+             // Inject instructions for Expressive Animation if enabled
+             if (appConfig.expressiveAnimation) {
+                 prompt += `\n[INSTRUCTION]: You are powered by a simulated neural engine. 
+                 At the end of your response, you MUST append a distinct mood tag in this format: [Mood: Valence, Arousal].
+                 - Valence: -1.0 (Negative/Sad) to 1.0 (Positive/Happy).
+                 - Arousal: -1.0 (Low Energy/Sleepy) to 1.0 (High Energy/Excited).
+                 
+                 Examples:
+                 "I am so happy to see you!" [Mood: 0.9, 0.8]
+                 "I'm feeling a bit tired today..." [Mood: 0.1, -0.8]
+                 "That makes me really angry!" [Mood: -0.9, 0.9]
+                 
+                 Also continue to use gesture tags like [nod], [shake], [tilt_question], [happy_bounce], [lean_forward], [excited] separately if needed.
+                 Use them naturally.`;
+             }
+
              pythonManager.send('ai:send', {
                  prompt: text,
                  model: appConfig.ollamaModel,
-                 systemPrompt: appConfig.systemPrompt
+                 systemPrompt: prompt
              });
         }
     } else if (msg.type === 'ai:response') {

@@ -26,10 +26,20 @@ function App() {
     rotation: { x: 0, y: 0, z: 0 },
     idleIntensity: 1.0,
     showBorder: false,
-    lookAtCursor: false, // New Property
+    lookAtCursor: false,
     eyeTrackingSensitivity: 0.1,
     randomLookInterval: { min: 1.0, max: 4.0 },
-    randomLookRadius: 5.0, // New Slider Property
+    randomLookRadius: 5.0,
+    shading: {
+      mode: 'default',
+      lightIntensity: 1.0,
+      ambientIntensity: 0.4,
+      shadowDarkness: 120,
+      saturationBoost: 1.0,
+      lightX: 1.0,
+      lightY: 1.0,
+      lightZ: 1.0,
+    },
     pushToTalk: false,
     pushToTalkKey: 'v'
   });
@@ -199,6 +209,114 @@ function App() {
 
         <TabsContent value="appearance">
             <Card>
+                <CardHeader><CardTitle>Shading & Lighting</CardTitle></CardHeader>
+                <CardContent className="space-y-6">
+                     <div className="space-y-2">
+                        <Label>Shading Mode</Label>
+                        <div className="flex gap-2">
+                            <Button 
+                                variant={config.shading?.mode === 'default' ? 'default' : 'outline'}
+                                size="sm"
+                                onClick={() => updateConfig({ shading: { ...config.shading, mode: 'default' } })}
+                            >
+                                Default (PBR)
+                            </Button>
+                            <Button 
+                                variant={config.shading?.mode === 'toon' ? 'default' : 'outline'}
+                                size="sm"
+                                onClick={() => updateConfig({ shading: { ...config.shading, mode: 'toon' } })}
+                            >
+                                Toon (Cel)
+                            </Button>
+                        </div>
+                     </div>
+                     
+                     <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Light Intensity</Label>
+                            <span className="text-sm text-muted-foreground">{config.shading?.lightIntensity?.toFixed(1) || '1.0'}</span>
+                         </div>
+                         <Slider 
+                            value={[config.shading?.lightIntensity || 1.0]} 
+                            min={0} max={3.0} step={0.1} 
+                            onValueChange={(v) => updateConfig({ shading: { ...config.shading, lightIntensity: v[0] } })} 
+                         />
+                     </div>
+                     
+                     <div className="space-y-2">
+                         <div className="flex justify-between">
+                            <Label>Ambient Intensity</Label>
+                            <span className="text-sm text-muted-foreground">{config.shading?.ambientIntensity?.toFixed(1) || '0.4'}</span>
+                         </div>
+                         <Slider 
+                            value={[config.shading?.ambientIntensity || 0.4]} 
+                            min={0} max={2.0} step={0.1} 
+                            onValueChange={(v) => updateConfig({ shading: { ...config.shading, ambientIntensity: v[0] } })} 
+                         />
+                     </div>
+                     
+                     {config.shading?.mode === 'toon' && (
+                        <>
+                         <div className="space-y-2">
+                             <div className="flex justify-between">
+                                <Label>Shadow Darkness</Label>
+                                <span className="text-sm text-muted-foreground">{config.shading?.shadowDarkness || 120}</span>
+                             </div>
+                             <Slider 
+                                value={[config.shading?.shadowDarkness || 120]} 
+                                min={0} max={200} step={5} 
+                                onValueChange={(v) => updateConfig({ shading: { ...config.shading, shadowDarkness: v[0] } })} 
+                             />
+                             <p className="text-xs text-muted-foreground">Lower = darker shadows</p>
+                         </div>
+                         
+                         <div className="space-y-2">
+                             <div className="flex justify-between">
+                                <Label>Saturation Boost</Label>
+                                <span className="text-sm text-muted-foreground">{config.shading?.saturationBoost?.toFixed(1) || '1.0'}</span>
+                             </div>
+                             <Slider 
+                                value={[config.shading?.saturationBoost || 1.0]} 
+                                min={0.5} max={2.0} step={0.1} 
+                                onValueChange={(v) => updateConfig({ shading: { ...config.shading, saturationBoost: v[0] } })} 
+                             />
+                         </div>
+                        </>
+                     )}
+                     
+                     <div className="space-y-4 pt-2 border-t">
+                         <Label className="text-sm font-medium">Light Direction</Label>
+                         <div className="grid grid-cols-3 gap-4">
+                             <div className="space-y-1">
+                                 <Label className="text-xs">X: {config.shading?.lightX?.toFixed(1) || '1.0'}</Label>
+                                 <Slider 
+                                    value={[config.shading?.lightX || 1.0]} 
+                                    min={-2} max={2} step={0.1} 
+                                    onValueChange={(v) => updateConfig({ shading: { ...config.shading, lightX: v[0] } })} 
+                                 />
+                             </div>
+                             <div className="space-y-1">
+                                 <Label className="text-xs">Y: {config.shading?.lightY?.toFixed(1) || '1.0'}</Label>
+                                 <Slider 
+                                    value={[config.shading?.lightY || 1.0]} 
+                                    min={-2} max={2} step={0.1} 
+                                    onValueChange={(v) => updateConfig({ shading: { ...config.shading, lightY: v[0] } })} 
+                                 />
+                             </div>
+                             <div className="space-y-1">
+                                 <Label className="text-xs">Z: {config.shading?.lightZ?.toFixed(1) || '1.0'}</Label>
+                                 <Slider 
+                                    value={[config.shading?.lightZ || 1.0]} 
+                                    min={-2} max={2} step={0.1} 
+                                    onValueChange={(v) => updateConfig({ shading: { ...config.shading, lightZ: v[0] } })} 
+                                 />
+                             </div>
+                         </div>
+                     </div>
+                </CardContent>
+            </Card>
+
+            <Card className="mt-4">
                 <CardHeader><CardTitle>Character Transform</CardTitle></CardHeader>
                 <CardContent className="space-y-6">
                      <div className="space-y-2">

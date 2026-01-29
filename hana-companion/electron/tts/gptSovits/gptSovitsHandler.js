@@ -5,9 +5,20 @@ const { app } = require('electron');
 // Helper to find models
 const GPT_SOVITS_ROOT = path.resolve(__dirname, '../../../../python/gpt-sovits');
 
+// Cache for model scans - avoid repeated filesystem access
+let modelCache = null;
+let modelCacheTime = 0;
+const MODEL_CACHE_TTL = 60000; // 60 seconds cache TTL
+
 async function getModels(apiUrl) {
+    // Return cached results if still valid
+    const now = Date.now();
+    if (modelCache && (now - modelCacheTime) < MODEL_CACHE_TTL) {
+        return modelCache;
+    }
+
     // Scan directories
-    console.log("Scanning for models in:", GPT_SOVITS_ROOT);
+    // console.log("Scanning for models in:", GPT_SOVITS_ROOT);
     
     const gptDir = path.join(GPT_SOVITS_ROOT, 'GPT_weights');
     const sovitsDir = path.join(GPT_SOVITS_ROOT, 'SoVITS_weights');
@@ -48,10 +59,11 @@ async function getModels(apiUrl) {
         ...pretrainedSovits
     ];
 
-    return {
-        gpt: gptModels,
-        sovits: sovitsModels
-    };
+    // Cache the results
+    modelCache = { gpt: gptModels, sovits: sovitsModels };
+    modelCacheTime = Date.now();
+
+    return modelCache;
 }
 
 async function setSoVITS(apiUrl, params) {
@@ -119,30 +131,39 @@ async function generateAudio(apiUrl, params) {
     const textLang = (params.text_lang || 'en').toLowerCase();
     const promptLang = (params.prompt_lang || 'en').toLowerCase();
 
-    // Akari's heavy optimization payload
+    // OPTIMIZED payload for speed and lower resource usage
     const body = {
         text: params.text,
         text_lang: LANG_MAP[textLang] || textLang,
         ref_audio_path: params.ref_audio_path,
         prompt_text: params.prompt_text || "",
         prompt_lang: LANG_MAP[promptLang] || promptLang,
-        top_k: params.top_k || 5, // Default 5
-        top_p: params.top_p || 1, // Default 1
-        temperature: params.temperature || 1, // Default 1
-        text_split_method: params.text_split_method || "cut0", // Default cut0 for speed
-        batch_size: 1, // Batch size 1 for lowest latency
+        // Speed optimizations:
+        top_k: params.top_k || 3,           // Reduced from 5 - faster sampling
+        top_p: params.top_p || 0.8,         // Reduced from 1 - more focused
+        temperature: params.temperature || 0.8, // Slightly lower for consistency
+        text_split_method: params.text_split_method || "cut0", // cut0 = no split, fastest for short text
+        batch_size: 1,                      // Always 1 for lowest latency
+        batch_threshold: 0.5,               // Lower threshold
         speed_factor: params.speed_factor || 1.0,
-        streaming_mode: !!params.streamCallback, // Enable streaming if callback provided
-        media_type: "wav", // RAW WAV
-        parallel_infer: true, // Enable parallel inference
-        repetition_penalty: 1.35 // Standard penalty
+        streaming_mode: true,               // Always stream for faster first-byte
+        media_type: "raw",                  // Raw PCM - no encoding overhead
+        parallel_infer: true,               // Enable parallel inference
+        repetition_penalty: 1.25,           // Slightly lower for speed
+        split_bucket: false,                // Disable bucket splitting for latency
+        fragment_interval: 0.2,             // Faster fragment generation
+        seed: -1                            // Random seed
     };
 
-    console.log("Sending TTS Request:", JSON.stringify(body, null, 2));
+    // Only log in debug mode to reduce console overhead
+    // console.log("Sending TTS Request:", JSON.stringify(body, null, 2));
 
     const res = await fetch(new URL('tts', fixedUrl), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+            'Content-Type': 'application/json',
+            'Connection': 'keep-alive'       // Reuse connection
+        },
         body: JSON.stringify(body)
     });
 
