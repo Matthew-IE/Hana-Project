@@ -1,14 +1,27 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Settings, Smile, Terminal, Power, Mic, MessageSquare } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Slider } from "@/components/ui/slider"
-import { Switch } from "@/components/ui/switch"
-import { Label } from "@/components/ui/label"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { 
+    Settings, 
+    Terminal, 
+    Power, 
+    MessageSquare, 
+    Activity, 
+    Eye, 
+    Brain, 
+    LayoutDashboard,
+    Mic
+} from 'lucide-react';
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
+import { cn } from "@/lib/utils"
 
+// Dashboard Components
+import { GeneralSettings } from "./components/dashboard/GeneralSettings"
+import { AppearanceSettings } from "./components/dashboard/AppearanceSettings"
+import { SubtitleSettings } from "./components/dashboard/SubtitleSettings"
+import { DebugPanel } from "./components/dashboard/DebugPanel"
+
+// Existing Components
 import { VoiceControls } from "./components/VoiceControls"
 import { AIControls } from "./components/AIControls"
 import { TTSControls } from "./components/TTSControls"
@@ -17,6 +30,7 @@ const API_URL = 'http://localhost:3000/api/config';
 const WS_URL = 'ws://localhost:3000';
 
 function App() {
+  const [activeTab, setActiveTab] = useState('monitor');
   const [config, setConfig] = useState({
     vrmPath: '',
     alwaysOnTop: true,
@@ -47,515 +61,231 @@ function App() {
   
   const ws = useRef(null);
 
-  useEffect(() => {
-    // The source of all evil (and re-renders)
-    fetchConfig();
-    connectWebSocket();
-    return () => {
-        // Cleanup on aisle 5
-        if (ws.current) ws.current.close();
-    };
-  }, []);
-
-  const fetchConfig = async () => {
-    try {
-      const res = await fetch(API_URL);
-      const data = await res.json();
-      setConfig(prev => ({ ...prev, ...data }));
-    } catch (e) { console.error(e); }
-  };
-
-  const connectWebSocket = () => {
-    ws.current = new WebSocket(WS_URL);
-    ws.current.onopen = () => setConnected(true);
-    ws.current.onclose = () => {
-        setConnected(false);
-        setTimeout(connectWebSocket, 3000);
-    };
-    ws.current.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'config-update') {
-            setConfig(prev => ({ ...prev, ...data.payload }));
-        }
-        // Dispatch to window for child components
-        window.dispatchEvent(new CustomEvent('hana-ws-message', { detail: data }));
-    };
-  };
-
-  const updateConfig = (newConfig) => {
-      const merged = { ...config, ...newConfig };
-      setConfig(merged);
-      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-          ws.current.send(JSON.stringify({ type: 'update-config', payload: newConfig }));
-      } else {
-          // Fallback to REST
-          fetch(API_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(newConfig)
-          });
-      }
-  };
-
-  const handleSubtitleChange = (key, value) => {
-      const currentSubtitle = config.subtitle || {};
-      updateConfig({ 
-          subtitle: { 
-              ...currentSubtitle, 
-              [key]: value 
-          } 
+  // Memoize handlers to prevent unnecessary re-renders
+  const updateConfig = useCallback((newConfig) => {
+      setConfig(prev => {
+          const merged = { ...prev, ...newConfig };
+          if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+              ws.current.send(JSON.stringify({ type: 'update-config', payload: newConfig }));
+          } else {
+              fetch(API_URL, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(newConfig)
+              });
+          }
+          return merged;
       });
-  };
-
-  const handleSliderChange = (key, value) => {
-      updateConfig({ [key]: value[0] });
-  };
+  }, []);
   
-  const handleDebugCommand = (command, value) => {
+  const handleDebugCommand = useCallback((command, value) => {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
         ws.current.send(JSON.stringify({ type: 'debug-command', command, value }));
     }
-  };
+  }, []);
   
-  const sendCommand = (type, payload = {}) => {
+  const sendCommand = useCallback((type, payload = {}) => {
       if (ws.current && ws.current.readyState === WebSocket.OPEN) {
           ws.current.send(JSON.stringify({ type, ...payload }));
       }
-  };
+  }, []);
 
-  const handlePositionChange = (axis, value) => {
-      updateConfig({ position: { ...config.position, [axis]: value[0] } });
-  };
-
-  const handleRotationChange = (axis, value) => {
-      updateConfig({ rotation: { ...config.rotation, [axis]: value[0] } });
-  };
-
-  const handleShutdown = () => {
+  const handleShutdown = useCallback(() => {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
         if (confirm("Are you sure you want to close Hana?")) {
             ws.current.send(JSON.stringify({ type: 'app-command', command: 'quit' }));
         }
     }
+  }, []);
+
+  // Memoize menu items to prevent recreation on every render
+  const menuItems = useMemo(() => [
+    { id: 'monitor', label: 'Monitor', icon: Activity },
+    { id: 'ai', label: 'Intelligence', icon: Brain },
+    { id: 'visuals', label: 'Visuals', icon: Eye },
+    { id: 'subtitles', label: 'Subtitles', icon: MessageSquare },
+    { id: 'system', label: 'System', icon: Settings },
+    { id: 'debug', label: 'Debug', icon: Terminal },
+  ], []);
+
+  // WebSocket connection and config fetch
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const res = await fetch(API_URL);
+        const data = await res.json();
+        setConfig(prev => ({ ...prev, ...data }));
+      } catch (e) { console.error(e); }
+    };
+
+    const connectWebSocket = () => {
+      ws.current = new WebSocket(WS_URL);
+      ws.current.onopen = () => setConnected(true);
+      ws.current.onclose = () => {
+          setConnected(false);
+          setTimeout(connectWebSocket, 3000);
+      };
+      ws.current.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          if (data.type === 'config-update') {
+              setConfig(prev => ({ ...prev, ...data.payload }));
+          }
+          window.dispatchEvent(new CustomEvent('hana-ws-message', { detail: data }));
+      };
+    };
+
+    fetchConfig();
+    connectWebSocket();
+    return () => {
+        if (ws.current) ws.current.close();
+    };
+  }, []);
+
+  // Effect to handle Subtitle Preview persistence based on active tab
+  useEffect(() => {
+      if (activeTab === 'subtitles') {
+         setTimeout(() => {
+            if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+                ws.current.send(JSON.stringify({ 
+                    type: 'debug-command', 
+                    command: 'preview-subtitle', 
+                    isPersistent: true 
+                }));
+            }
+         }, 300);
+      } else {
+          if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+                ws.current.send(JSON.stringify({ 
+                    type: 'debug-command', 
+                    command: 'preview-subtitle', 
+                    value: null,
+                    isPersistent: false 
+                }));
+            }
+      }
+  }, [activeTab]);
+
+  const renderContent = () => {
+      switch(activeTab) {
+          case 'monitor':
+              return (
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      <div className="p-6 bg-card rounded-xl border border-border shadow-sm">
+                          <div className="flex items-center gap-4">
+                              <div className={`p-3 rounded-full ${connected ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'}`}>
+                                  <Activity className="w-6 h-6" />
+                              </div>
+                              <div>
+                                  <p className="text-sm font-medium text-muted-foreground">System Status</p>
+                                  <h3 className="text-2xl font-bold">{connected ? 'Online' : 'Offline'}</h3>
+                              </div>
+                          </div>
+                      </div>
+                      
+                      {/* Add quick status items here */}
+                      <div className="p-6 bg-card rounded-xl border border-border shadow-sm">
+                          <div className="flex items-center gap-4">
+                              <div className="p-3 rounded-full bg-primary/20 text-primary">
+                                  <Mic className="w-6 h-6" />
+                              </div>
+                              <div>
+                                  <p className="text-sm font-medium text-muted-foreground">Input Mode</p>
+                                  <h3 className="text-lg font-bold">{config.pushToTalk ? 'Push-To-Talk' : 'Voice Activity'}</h3>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              );
+          case 'system':
+              return <GeneralSettings config={config} updateConfig={updateConfig} />;
+          case 'visuals':
+              return <AppearanceSettings config={config} updateConfig={updateConfig} />;
+          case 'subtitles':
+              return <SubtitleSettings config={config} updateConfig={updateConfig} />;
+          case 'ai':
+              return (
+                  <div className="space-y-6">
+                       <div className="grid gap-6 lg:grid-cols-2">
+                           <VoiceControls config={config} updateConfig={updateConfig} sendCommand={sendCommand} ws={ws.current} connected={connected} />
+                           <TTSControls config={config} updateConfig={updateConfig} sendCommand={sendCommand} />
+                       </div>
+                       <AIControls config={config} updateConfig={updateConfig} />
+                  </div>
+              );
+          case 'debug':
+              return <DebugPanel handleDebugCommand={handleDebugCommand} />;
+          default:
+              return null;
+      }
   };
 
   return (
-    <div className="container mx-auto p-4 max-w-4xl min-h-screen bg-background text-foreground transition-colors duration-300">
-      <header className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-pink-500">
-            Hana Controller
-        </h1>
-        <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-                <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
-                <span className="text-sm text-muted-foreground">{connected ? 'Connected' : 'Disconnected'}</span>
+    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+        {/* Sidebar */}
+        <aside className="w-64 bg-card border-r border-border flex flex-col shadow-lg z-10">
+            <div className="p-6">
+                <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-pink-500 flex items-center gap-2">
+                    <LayoutDashboard className="w-6 h-6 text-primary" />
+                    Hana
+                </h1>
             </div>
-            <Button variant="ghost" size="icon" onClick={handleShutdown} title="Shutdown Hana" className="text-muted-foreground hover:text-destructive">
-                <Power className="w-5 h-5" />
-            </Button>
-        </div>
-      </header>
-      <Tabs defaultValue="general" className="w-full" onValueChange={(val) => {
-          if (val === 'subtitle') {
-             // Delay slightly to let render catch up, then send "persistent start"
-             setTimeout(() => {
-                if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-                    ws.current.send(JSON.stringify({ 
-                        type: 'debug-command', 
-                        command: 'preview-subtitle', 
-                        isPersistent: true 
-                    }));
-                }
-             }, 300);
-          } else {
-             // If leaving subtitle, send "persistent stop" (empty value + empty persistent flag effectively, or explicit stop)
-              if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-                    ws.current.send(JSON.stringify({ 
-                        type: 'debug-command', 
-                        command: 'preview-subtitle', 
-                        value: null,
-                        isPersistent: false 
-                    }));
-                }
-          }
-      }}>
-        <TabsList className="grid w-full grid-cols-5 mb-4">
-            <TabsTrigger value="general"><Settings className="w-4 h-4 mr-2"/> General</TabsTrigger>
-            <TabsTrigger value="appearance"><Smile className="w-4 h-4 mr-2"/> Appearance</TabsTrigger>
-            <TabsTrigger value="subtitle"><MessageSquare className="w-4 h-4 mr-2"/> Subtitles</TabsTrigger>
-            <TabsTrigger value="ai"><Mic className="w-4 h-4 mr-2"/> Voice & AI</TabsTrigger>
-            <TabsTrigger value="debug"><Terminal className="w-4 h-4 mr-2"/> Debug</TabsTrigger>
-        </TabsList>
+            
+            <ScrollArea className="flex-1 px-3">
+                <nav className="space-y-2">
+                    {menuItems.map((item) => (
+                        <Button
+                            key={item.id}
+                            variant={activeTab === item.id ? "secondary" : "ghost"}
+                            className={cn(
+                                "w-full justify-start text-lg h-12", 
+                                activeTab === item.id && "bg-secondary/50 font-semibold"
+                            )}
+                            onClick={() => setActiveTab(item.id)}
+                        >
+                            <item.icon className="mr-3 h-5 w-5" />
+                            {item.label}
+                        </Button>
+                    ))}
+                </nav>
+            </ScrollArea>
 
-        <TabsContent value="general">
-            <Card>
-                <CardHeader><CardTitle>Window Settings</CardTitle></CardHeader>
-                <CardContent className="space-y-4">
-                    <div className="flex items-center justify-between">
-                        <Label>Always on Top</Label>
-                        <Switch checked={config.alwaysOnTop} onCheckedChange={(c) => updateConfig({ alwaysOnTop: c })} />
+            <div className="p-4 border-t border-border mt-auto">
+                 <div className="flex items-center gap-3 mb-4 px-2">
+                    <div className={`w-2.5 h-2.5 rounded-full ${connected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500'}`} />
+                    <span className="text-sm font-medium text-muted-foreground">{connected ? 'System Connected' : 'Disconnected'}</span>
+                 </div>
+                 <Button variant="destructive" className="w-full" onClick={handleShutdown}>
+                    <Power className="w-4 h-4 mr-2" />
+                    Shutdown
+                 </Button>
+            </div>
+        </aside>
+
+        {/* Main Content */}
+        <main className="flex-1 overflow-auto bg-background/50 relative">
+             <div className="p-8 pb-20 max-w-7xl mx-auto space-y-6">
+                 <div className="flex items-center justify-between mb-2">
+                    <div>
+                        <h2 className="text-3xl font-bold tracking-tight">{menuItems.find(i => i.id === activeTab)?.label}</h2>
+                        <p className="text-muted-foreground">
+                            {activeTab === 'monitor' && "System overview and status"}
+                            {activeTab === 'system' && "Core application settings"}
+                            {activeTab === 'visuals' && "Character customization and view"}
+                            {activeTab === 'ai' && "Voice, Text-to-Speech and LLM settings"}
+                            {activeTab === 'subtitles' && "Captions appearance and behavior"}
+                            {activeTab === 'debug' && "Developer tools and animation triggers"}
+                        </p>
                     </div>
-                    <div className="flex items-center justify-between">
-                        <Label>Click Through (Ignore Mouse)</Label>
-                        <Switch checked={config.clickThrough} onCheckedChange={(c) => updateConfig({ clickThrough: c })} />
-                    </div>
-                    <div className="flex items-center justify-between">
-                        <Label>Show Debug Border</Label>
-                        <Switch checked={config.showBorder} onCheckedChange={(c) => updateConfig({ showBorder: c })} />
-                    </div>
-                </CardContent>
-            </Card>
-        </TabsContent>
-
-        <TabsContent value="appearance">
-            <Card>
-                <CardHeader><CardTitle>Shading & Lighting</CardTitle></CardHeader>
-                <CardContent className="space-y-6">
-                     <div className="space-y-2">
-                        <Label>Shading Mode</Label>
-                        <div className="flex gap-2">
-                            <Button 
-                                variant={config.shading?.mode === 'default' ? 'default' : 'outline'}
-                                size="sm"
-                                onClick={() => updateConfig({ shading: { ...config.shading, mode: 'default' } })}
-                            >
-                                Default (PBR)
-                            </Button>
-                            <Button 
-                                variant={config.shading?.mode === 'toon' ? 'default' : 'outline'}
-                                size="sm"
-                                onClick={() => updateConfig({ shading: { ...config.shading, mode: 'toon' } })}
-                            >
-                                Toon (Cel)
-                            </Button>
-                        </div>
-                     </div>
-                     
-                     <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Light Intensity</Label>
-                            <span className="text-sm text-muted-foreground">{config.shading?.lightIntensity?.toFixed(1) || '1.0'}</span>
-                         </div>
-                         <Slider 
-                            value={[config.shading?.lightIntensity || 1.0]} 
-                            min={0} max={3.0} step={0.1} 
-                            onValueChange={(v) => updateConfig({ shading: { ...config.shading, lightIntensity: v[0] } })} 
-                         />
-                     </div>
-                     
-                     <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Ambient Intensity</Label>
-                            <span className="text-sm text-muted-foreground">{config.shading?.ambientIntensity?.toFixed(1) || '0.4'}</span>
-                         </div>
-                         <Slider 
-                            value={[config.shading?.ambientIntensity || 0.4]} 
-                            min={0} max={2.0} step={0.1} 
-                            onValueChange={(v) => updateConfig({ shading: { ...config.shading, ambientIntensity: v[0] } })} 
-                         />
-                     </div>
-                     
-                     {config.shading?.mode === 'toon' && (
-                        <>
-                         <div className="space-y-2">
-                             <div className="flex justify-between">
-                                <Label>Shadow Darkness</Label>
-                                <span className="text-sm text-muted-foreground">{config.shading?.shadowDarkness || 120}</span>
-                             </div>
-                             <Slider 
-                                value={[config.shading?.shadowDarkness || 120]} 
-                                min={0} max={200} step={5} 
-                                onValueChange={(v) => updateConfig({ shading: { ...config.shading, shadowDarkness: v[0] } })} 
-                             />
-                             <p className="text-xs text-muted-foreground">Lower = darker shadows</p>
-                         </div>
-                         
-                         <div className="space-y-2">
-                             <div className="flex justify-between">
-                                <Label>Saturation Boost</Label>
-                                <span className="text-sm text-muted-foreground">{config.shading?.saturationBoost?.toFixed(1) || '1.0'}</span>
-                             </div>
-                             <Slider 
-                                value={[config.shading?.saturationBoost || 1.0]} 
-                                min={0.5} max={2.0} step={0.1} 
-                                onValueChange={(v) => updateConfig({ shading: { ...config.shading, saturationBoost: v[0] } })} 
-                             />
-                         </div>
-                        </>
-                     )}
-                     
-                     <div className="space-y-4 pt-2 border-t">
-                         <Label className="text-sm font-medium">Light Direction</Label>
-                         <div className="grid grid-cols-3 gap-4">
-                             <div className="space-y-1">
-                                 <Label className="text-xs">X: {config.shading?.lightX?.toFixed(1) || '1.0'}</Label>
-                                 <Slider 
-                                    value={[config.shading?.lightX || 1.0]} 
-                                    min={-2} max={2} step={0.1} 
-                                    onValueChange={(v) => updateConfig({ shading: { ...config.shading, lightX: v[0] } })} 
-                                 />
-                             </div>
-                             <div className="space-y-1">
-                                 <Label className="text-xs">Y: {config.shading?.lightY?.toFixed(1) || '1.0'}</Label>
-                                 <Slider 
-                                    value={[config.shading?.lightY || 1.0]} 
-                                    min={-2} max={2} step={0.1} 
-                                    onValueChange={(v) => updateConfig({ shading: { ...config.shading, lightY: v[0] } })} 
-                                 />
-                             </div>
-                             <div className="space-y-1">
-                                 <Label className="text-xs">Z: {config.shading?.lightZ?.toFixed(1) || '1.0'}</Label>
-                                 <Slider 
-                                    value={[config.shading?.lightZ || 1.0]} 
-                                    min={-2} max={2} step={0.1} 
-                                    onValueChange={(v) => updateConfig({ shading: { ...config.shading, lightZ: v[0] } })} 
-                                 />
-                             </div>
-                         </div>
-                     </div>
-                </CardContent>
-            </Card>
-
-            <Card className="mt-4">
-                <CardHeader><CardTitle>Character Transform</CardTitle></CardHeader>
-                <CardContent className="space-y-6">
-                     <div className="space-y-2">
-                         <Label>Scale ({config.scale})</Label>
-                         <Slider value={[config.scale]} min={0.1} max={3.0} step={0.1} onValueChange={(v) => handleSliderChange('scale', v)} />
-                     </div>
-                     <div className="space-y-2">
-                         <Label>Position X ({config.position?.x})</Label>
-                         <Slider value={[config.position?.x || 0]} min={-5} max={5} step={0.1} onValueChange={(v) => handlePositionChange('x', v)} />
-                     </div>
-                     <div className="space-y-2">
-                         <Label>Position Y ({config.position?.y})</Label>
-                         <Slider value={[config.position?.y || 0]} min={-5} max={5} step={0.1} onValueChange={(v) => handlePositionChange('y', v)} />
-                     </div>
-                     <div className="space-y-2">
-                         <Label>Rotation X ({config.rotation?.x || 0})</Label>
-                         <Slider value={[config.rotation?.x || 0]} min={-3.14} max={3.14} step={0.1} onValueChange={(v) => handleRotationChange('x', v)} />
-                     </div>
-                     <div className="space-y-2">
-                         <Label>Rotation Y ({config.rotation?.y || 0})</Label>
-                         <Slider value={[config.rotation?.y || 0]} min={-3.14} max={3.14} step={0.1} onValueChange={(v) => handleRotationChange('y', v)} />
-                     </div>
-                     <div className="space-y-2">
-                         <Label>Rotation Z ({config.rotation?.z || 0})</Label>
-                         <Slider value={[config.rotation?.z || 0]} min={-3.14} max={3.14} step={0.1} onValueChange={(v) => handleRotationChange('z', v)} />
-                     </div>
-                </CardContent>
-            </Card>
-
-            <Card className="mt-4">
-                <CardHeader><CardTitle>Eye & Head Tracking</CardTitle></CardHeader>
-                <CardContent className="space-y-6">
-                    <div className="flex items-center justify-between">
-                        <Label>Look at Cursor</Label>
-                        <Switch checked={config.lookAtCursor} onCheckedChange={(c) => updateConfig({ lookAtCursor: c })} />
-                    </div>
-                    {config.lookAtCursor ? (
-                        <div className="space-y-2">
-                            <Label>Cursor Tracking Sensitivity ({config.eyeTrackingSensitivity})</Label>
-                            <Slider value={[config.eyeTrackingSensitivity]} min={0} max={1.0} step={0.1} onValueChange={(v) => handleSliderChange('eyeTrackingSensitivity', v)} />
-                        </div>
-                    ) : (
-                        <>
-                            <div className="space-y-2">
-                                <Label>Random Look Radius ({config.randomLookRadius})</Label>
-                                <Slider value={[config.randomLookRadius]} min={0} max={10.0} step={0.1} onValueChange={(v) => handleSliderChange('randomLookRadius', v)} />
-                            </div>
-                            <div className="space-y-2">
-                                <div className="flex justify-between">
-                                    <Label>Look Interval (Max)</Label>
-                                    <span className="text-sm text-muted-foreground">{config.randomLookInterval?.max || 4.0}s</span>
-                                </div>
-                                <Slider 
-                                    value={[config.randomLookInterval?.max || 4.0]} 
-                                    min={1.0} 
-                                    max={10.0} 
-                                    step={0.5} 
-                                    onValueChange={(v) => updateConfig({ randomLookInterval: { ...config.randomLookInterval, max: v[0] } })} 
-                                />
-                            </div>
-                        </>
-                    )}
-                </CardContent>
-            </Card>
-        </TabsContent>
-
-        <TabsContent value="subtitle">
-            <Card>
-                <CardHeader><CardTitle>Subtitle Styling</CardTitle></CardHeader>
-                <CardContent className="space-y-6">
-                     <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Font Size</Label>
-                            <span className="text-sm text-muted-foreground">{config.subtitle?.fontSize || 24}px</span>
-                         </div>
-                         <Slider 
-                            value={[config.subtitle?.fontSize || 24]} 
-                            min={12} 
-                            max={64} 
-                            step={1} 
-                            onValueChange={(v) => handleSubtitleChange('fontSize', v[0])} 
-                         />
-                     </div>
-                     
-                     <div className="space-y-2">
-                        <Label>Text Color</Label>
-                        <div className="flex gap-2 items-center">
-                            <input 
-                                type="color" 
-                                value={config.subtitle?.color || '#ffffff'} 
-                                onChange={(e) => handleSubtitleChange('color', e.target.value)}
-                                className="h-10 w-20 cursor-pointer border rounded bg-transparent"
-                            />
-                            <span className="font-mono text-xs">{config.subtitle?.color || '#ffffff'}</span>
-                        </div>
-                     </div>
-
-                     <div className="space-y-2">
-                        <Label>Background Color</Label>
-                        <div className="flex gap-2">
-                             <input 
-                                type="text"
-                                value={config.subtitle?.backgroundColor || 'rgba(0, 0, 0, 0.7)'}
-                                onChange={(e) => handleSubtitleChange('backgroundColor', e.target.value)}
-                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
-                                placeholder="rgba(0, 0, 0, 0.7)"
-                            />
-                        </div>
-                        <p className="text-xs text-muted-foreground">Supports Hex (#000) or RGBA for transparency</p>
-                     </div>
-
-                     <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Box Width</Label>
-                            <span className="text-sm text-muted-foreground">{config.subtitle?.maxWidth || 80}%</span>
-                         </div>
-                         <Slider 
-                            value={[config.subtitle?.maxWidth || 80]} 
-                            min={20} 
-                            max={100} 
-                            step={1} 
-                            onValueChange={(v) => handleSubtitleChange('maxWidth', v[0])} 
-                         />
-                     </div>
-
-                     <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Vertical Padding</Label>
-                            <span className="text-sm text-muted-foreground">{config.subtitle?.padding || 20}px</span>
-                         </div>
-                         <Slider 
-                            value={[config.subtitle?.padding || 20]} 
-                            min={5} 
-                            max={50} 
-                            step={1} 
-                            onValueChange={(v) => handleSubtitleChange('padding', v[0])} 
-                         />
-                     </div>
-
-                     <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Border Radius</Label>
-                            <span className="text-sm text-muted-foreground">{config.subtitle?.borderRadius || 10}px</span>
-                         </div>
-                         <Slider 
-                            value={[config.subtitle?.borderRadius || 10]} 
-                            min={0} 
-                            max={50} 
-                            step={1} 
-                            onValueChange={(v) => handleSubtitleChange('borderRadius', v[0])} 
-                         />
-                     </div>
-
-                     <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Vertical Position (From Bottom)</Label>
-                            <span className="text-sm text-muted-foreground">{config.subtitle?.bottomOffset || 80}px</span>
-                         </div>
-                         <Slider 
-                            value={[config.subtitle?.bottomOffset !== undefined ? config.subtitle.bottomOffset : 80]} 
-                            min={0} 
-                            max={window.innerHeight || 800} // Approximate usable max
-                            step={10} 
-                            onValueChange={(v) => handleSubtitleChange('bottomOffset', v[0])} 
-                         />
-                     </div>
-
-                     <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Horizontal Position</Label>
-                            <span className="text-sm text-muted-foreground">{config.subtitle?.horizontalPosition !== undefined ? config.subtitle.horizontalPosition : 50}%</span>
-                         </div>
-                         <Slider 
-                            value={[config.subtitle?.horizontalPosition !== undefined ? config.subtitle.horizontalPosition : 50]} 
-                            min={0} 
-                            max={100} 
-                            step={1} 
-                            onValueChange={(v) => handleSubtitleChange('horizontalPosition', v[0])} 
-                         />
-                     </div>
-
-                    <div className="space-y-2">
-                         <div className="flex justify-between">
-                            <Label>Typewriter Speed (Delay per word)</Label>
-                            <span className="text-sm text-muted-foreground">{config.dialogueSpeed || 50}ms</span>
-                         </div>
-                         <Slider 
-                            value={[config.dialogueSpeed || 50]} 
-                            min={10} 
-                            max={500} 
-                            step={10} 
-                            onValueChange={(v) => updateConfig({ dialogueSpeed: v[0] })} 
-                         />
-                     </div>
-                </CardContent>
-            </Card>
-        </TabsContent>
-
-        <TabsContent value="ai" className="space-y-4">
-             <VoiceControls 
-                config={config} 
-                updateConfig={updateConfig} 
-                sendCommand={sendCommand} 
-                ws={ws.current}
-             />
-             <AIControls config={config} updateConfig={updateConfig} />
-             <TTSControls config={config} updateConfig={updateConfig} sendCommand={sendCommand} />
-        </TabsContent>
-
-        <TabsContent value="debug">
-            <Card>
-                <CardHeader><CardTitle>Animation Debugger</CardTitle></CardHeader>
-                <CardContent className="space-y-4">
-                    <Label>Force Play Animation</Label>
-                    <div className="grid grid-cols-2 gap-2">
-                        <Button variant="outline" onClick={() => handleDebugCommand('play-animation', '/animations/Idle.fbx')}>Idle 1</Button>
-                        <Button variant="outline" onClick={() => handleDebugCommand('play-animation', '/animations/Idle2.fbx')}>Idle 2</Button>
-                        <Button variant="outline" onClick={() => handleDebugCommand('play-animation', '/animations/Idle3.fbx')}>Idle 3</Button>
-                        <Button variant="outline" onClick={() => handleDebugCommand('play-animation', '/animations/Wave.fbx')}>Wave</Button>
-                        <Button variant="outline" onClick={() => handleDebugCommand('play-animation', '/animations/Thinking.fbx')}>Thinking</Button>
-                    </div>
-                </CardContent>
-                <CardContent className="space-y-4">
-                    <Label>Force Expression</Label>
-                    <div className="grid grid-cols-3 gap-2">
-                         {['neutral', 'happy', 'angry', 'sad', 'relaxed', 'surprised'].map(expr => (
-                             <Button key={expr} variant="outline" onClick={() => handleDebugCommand('set-emotion', expr)}>
-                                 {expr.charAt(0).toUpperCase() + expr.slice(1)}
-                             </Button>
-                         ))}
-                    </div>
-                </CardContent>
-            </Card>
-        </TabsContent>
-        
-      </Tabs>
+                 </div>
+                 <Separator className="bg-border/50" />
+                 
+                 <div className="animate-in fade-in-50 slide-in-from-bottom-2 duration-500">
+                    {renderContent()}
+                 </div>
+             </div>
+        </main>
     </div>
   );
 }
 
 export default App;
-

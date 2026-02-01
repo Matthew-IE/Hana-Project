@@ -1,11 +1,12 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
+const { execSync } = require('child_process');
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const fs = require('fs');
 const os = require('os');
 const { uIOhook, UiohookKey } = require('uiohook-napi');
 const pythonManager = require('./ai/pythonManager');
@@ -20,6 +21,20 @@ const ttsManager = new TTSHandler(CONFIG_DIR);
 
 // Ensure directories exist
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
+
+// Efficient deep merge for config updates (avoids spread operator overhead)
+function deepMerge(target, source) {
+    if (!source) return target;
+    const result = { ...target };
+    for (const key of Object.keys(source)) {
+        if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+            result[key] = deepMerge(target[key] || {}, source[key]);
+        } else {
+            result[key] = source[key];
+        }
+    }
+    return result;
+}
 
 // Default Config
 // I picked these values by rolling a d20. Deal with it.
@@ -38,6 +53,7 @@ let appConfig = {
   eyeTrackingSensitivity: 0.1,
   randomLookInterval: { min: 1.0, max: 4.0 },
   randomLookRadius: 5.0,
+  lipSyncSensitivity: 3.0, // Mouth movement sensitivity (1-5)
   // Shading configuration
   shading: {
     mode: 'default',        // 'default' or 'toon'
@@ -136,15 +152,18 @@ if (fs.existsSync(CONFIG_FILE)) {
 
 let saveTimeout = null;
 let lastSaveHash = null;  // Track config changes to avoid redundant saves
+let saveScheduled = false;
 
 function saveConfig() {
+  if (saveScheduled) return;
+  saveScheduled = true;
   if (saveTimeout) clearTimeout(saveTimeout);
   // Debounce save with longer delay for better batching
   saveTimeout = setTimeout(() => {
+      saveScheduled = false;
       try {
-          // Create hash of config to avoid redundant disk writes
-          const configStr = JSON.stringify(appConfig);
-          const hash = configStr.length + configStr.slice(0, 100);  // Simple hash
+          // Fast hash using config structure keys + critical values
+          const hash = `${appConfig.scale}-${appConfig.alwaysOnTop}-${appConfig.tts?.enabled}-${appConfig.shading?.mode}`;
           if (hash === lastSaveHash) return;  // Skip if unchanged
           
           lastSaveHash = hash;
@@ -165,8 +184,28 @@ function saveConfig() {
 let broadcastQueue = new Map();
 let broadcastTimeout = null;
 
+// Critical message types that should be sent immediately without throttling
+const IMMEDIATE_BROADCAST_TYPES = new Set([
+    'tts:audio',
+    'ai-event', 
+    'ptt-status',
+    'voice:devices',
+    'transcription',
+    'error'
+]);
+
 function broadcast(data) {
-    // Merge same-type messages, keeping latest
+    // Send critical messages immediately
+    if (IMMEDIATE_BROADCAST_TYPES.has(data.type)) {
+        wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify(data));
+            }
+        });
+        return;
+    }
+    
+    // Merge same-type messages, keeping latest (for config updates, etc.)
     broadcastQueue.set(data.type, data);
     
     if (!broadcastTimeout) {
@@ -435,8 +474,14 @@ wss.on('connection', (ws) => {
                 // Relay debug commands to all clients (Renderer)
                 broadcast(data);
             } else if (data.type === 'app-command' && data.command === 'quit') {
+                console.log('Quit command received. Stopping all services...');
                 pythonManager.stop();
-                app.quit();
+                ttsManager.stop();
+                
+                // Give processes a moment to terminate before quitting
+                setTimeout(() => {
+                    app.quit();
+                }, 500);
             } else if (data.type === 'ui:pick-file') {
                  // Handle File Picker Request from Controller
                  const win = BrowserWindow.getFocusedWindow() || mainWindow;
@@ -636,8 +681,42 @@ app.whenReady().then(() => {
   }
 
   app.on('will-quit', () => {
+    console.log('App will-quit: Cleaning up all processes...');
     globalShortcut.unregisterAll();
     uIOhook.stop();
+    
+    // Stop all Python processes
+    pythonManager.stop();
+    ttsManager.stop();
+    
+    console.log('Cleanup complete.');
+  });
+  
+  app.on('quit', () => {
+    console.log('App quit event. Forcing exit...');
+    
+    const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
+    
+    if (process.platform === 'win32' && isDev) {
+        // In dev mode, kill processes on our dev ports synchronously
+        const devPorts = [5173, 3002, 3003]; // Vite dev server ports only
+        
+        devPorts.forEach(port => {
+            try {
+                // Find and kill process on this port
+                execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { 
+                    timeout: 2000,
+                    windowsHide: true,
+                    stdio: 'ignore'
+                });
+            } catch (e) {
+                // Ignore errors - process might already be dead
+            }
+        });
+    }
+    
+    // Force immediate exit
+    process.exit(0);
   });
 });
 
@@ -811,7 +890,11 @@ pythonManager.on('message', (msg) => {
     } else if (msg.type === 'ai:response') {
         // Auto-TTS Trigger
         if (appConfig.tts.enabled) {
-            const text = msg.payload.text;
+            let text = msg.payload.text;
+            
+            // Strip mood tags from speech (e.g., "[Mood: 0.8, 0.5]")
+            text = text.replace(/\s*\[Mood:\s*[\d.-]+,\s*[\d.-]+\]\s*/gi, '').trim();
+            
             // Build TTS Params
             const params = {
                 text: text,

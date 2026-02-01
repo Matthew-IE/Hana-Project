@@ -30,28 +30,36 @@ class TTSHandler {
                 if (ready) {
                     console.log("GPT-SoVITS server is ready. Setting models...");
                     
-                    // Add a small delay like Akari just in case
+                    // Longer delay to avoid interrupting startup TTS requests
+                    // The server loads default models on startup, so this is only needed
+                    // if user has custom models selected
                     setTimeout(async () => {
                         const sovitsPath = ttsConf.selectedSovitsPath || ttsConf.sovitsPath;
                         const gptPath = ttsConf.selectedGptPath || ttsConf.gptPath;
     
-                        // Only set if paths are valid strings (not empty)
-                        // AND if the file actually exists (Akari doesn't check fs here, but safer to do sc)
+                        // Skip if using default pretrained models (they're already loaded)
+                        const isDefaultSovits = !sovitsPath || sovitsPath.includes('pretrained_models');
+                        const isDefaultGpt = !gptPath || gptPath.includes('pretrained_models');
+                        
+                        if (isDefaultSovits && isDefaultGpt) {
+                            console.log("Using default pretrained models, skipping reload.");
+                            return;
+                        }
                         
                         try {
-                            if (sovitsPath) {
+                            if (sovitsPath && !isDefaultSovits) {
                                 await gptSovitsHandler.setSoVITS(apiUrl, { weights_path: sovitsPath });
                                 console.log("Set SoVITS model:", sovitsPath);
                             }
                             
-                            if (gptPath) {
+                            if (gptPath && !isDefaultGpt) {
                                 await gptSovitsHandler.setGPT(apiUrl, { weights_path: gptPath });
                                 console.log("Set GPT model:", gptPath);
                             }
                         } catch (e) {
                              console.error("Failed to apply GPT-SoVITS models on startup:", e);
                         }
-                    }, 2000);
+                    }, 8000); // Longer delay to let initial TTS complete
                 }
             });
         });

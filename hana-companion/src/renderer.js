@@ -55,6 +55,11 @@ scene.add(ambientLight);
 // Tick tock, Mr. Wick
 const clock = new THREE.Clock();
 
+// Pre-allocated vectors to reduce GC pressure in animation loop
+const _tempVec3 = new THREE.Vector3();
+const _tempVec3B = new THREE.Vector3();
+const _tempMatrix4 = new THREE.Matrix4();
+
 // --- Toon Shading ---
 let currentShadingMode = 'default';
 let originalMaterials = new Map(); // Store original materials for reverting
@@ -408,11 +413,14 @@ function queueAudio(item) {
 }
 
 function processAudioQueue() {
+    console.log('[Audio] Processing queue, length:', audioQueue.length, 'isPlaying:', isPlayingAudio);
     if (isPlayingAudio || audioQueue.length === 0) return;
 
     const item = audioQueue.shift();
     const path = item.path;
     let text = item.text;
+    
+    console.log('[Audio] Playing:', path);
     
     // Parse tags for Procedural Animation if enabled
     if (currentConfig.expressiveAnimation) {
@@ -438,26 +446,41 @@ function processAudioQueue() {
     currentAudio.preload = "auto"; // Ensure buffering starts immediately
     currentAudio.crossOrigin = "anonymous"; // Enable CORs for analyze
     currentAudio.volume = 1.0; 
+    
+    console.log('[Audio] Created Audio element for:', src);
 
-    // Hook Analyser
+    // Hook Analyser - wrap in try/catch to not block playback
+    let audioSourceConnected = false;
     try {
         initAudioContext();
-        const source = audioContext.createMediaElementSource(currentAudio);
-        source.connect(analyser);
-        analyser.connect(audioContext.destination);
+        // Only create source if not already created for this element
+        if (!currentAudio._sourceCreated) {
+            const source = audioContext.createMediaElementSource(currentAudio);
+            source.connect(analyser);
+            analyser.connect(audioContext.destination);
+            currentAudio._sourceCreated = true;
+            audioSourceConnected = true;
+        }
     } catch (e) {
-        console.error("Audio Context Error:", e);
+        console.error("Audio Context Error (non-fatal):", e);
+        // Continue without analyser - audio will still play through default output
     }
 
     // Subscribe to 'playing' event to show text EXACTLY when sound starts
     // Use { once: true } to prevent re-triggering if buffering happens
     currentAudio.addEventListener('playing', () => {
+        console.log('[Audio] Playing event fired');
         if (text) {
             showDialogue(text, false, true, 'ai');
         }
     }, { once: true });
     
+    currentAudio.addEventListener('canplay', () => {
+        console.log('[Audio] Can play - ready to start');
+    }, { once: true });
+    
     currentAudio.onended = () => {
+        console.log('[Audio] Ended');
         // Audio finished: Hide subtitle
         if (subtitleBox) subtitleBox.style.display = 'none';
         
@@ -737,17 +760,18 @@ function updateHeadTracking(delta) {
 
     if (!neck && !spine) return;
 
-    const targetWorld = lookAtTarget.position.clone();
-    const localTarget = targetWorld.clone().applyMatrix4(currentVrm.scene.matrixWorld.clone().invert());
+    // Reuse cached vectors to avoid GC
+    _tempVec3.copy(lookAtTarget.position);
+    _tempMatrix4.copy(currentVrm.scene.matrixWorld).invert();
+    const localTarget = _tempVec3.applyMatrix4(_tempMatrix4);
     
     // Get bone position relative to Model Root
     const boneNode = neck || spine;
-    const boneWorldPos = new THREE.Vector3();
-    boneNode.getWorldPosition(boneWorldPos);
-    const boneLocalPos = boneWorldPos.clone().applyMatrix4(currentVrm.scene.matrixWorld.clone().invert());
+    boneNode.getWorldPosition(_tempVec3B);
+    const boneLocalPos = _tempVec3B.applyMatrix4(_tempMatrix4);
 
     // Calculate direction vector from Bone to Target in Model Space
-    const deltaPos = new THREE.Vector3().subVectors(localTarget, boneLocalPos);
+    const deltaPos = _tempVec3.sub(boneLocalPos);
 
     let yaw, pitch;
     // VRM 0.0 faces -Z, VRM 1.0 faces +Z
@@ -839,30 +863,37 @@ function stopThinking() {
     }
 }
 
+// Lip sync update throttle
+let lastLipSyncUpdate = 0;
+const LIP_SYNC_INTERVAL = 1000 / 30; // 30 FPS for lip sync is plenty
+
 function updateLipSync() {
     if (!currentVrm || !currentVrm.expressionManager) return;
+    
+    // Throttle lip sync updates
+    const now = performance.now();
+    if (now - lastLipSyncUpdate < LIP_SYNC_INTERVAL) return;
+    lastLipSyncUpdate = now;
 
     let openness = 0;
 
     if (isPlayingAudio && analyser && dataArray) {
         analyser.getByteFrequencyData(dataArray);
         
-        // Calculate volume average
+        // Calculate volume average - optimized loop
         let sum = 0;
-        for(let i = 0; i < dataArray.length; i++) {
+        const len = dataArray.length;
+        for(let i = 0; i < len; i++) {
             sum += dataArray[i];
         }
-        const average = sum / dataArray.length;
+        const average = sum / len;
         
-        const sensitivity = 3.0; 
+        const sensitivity = currentConfig.lipSyncSensitivity || 3.0; 
         openness = Math.min(1.0, (average / 255.0) * sensitivity);
         
         if (openness < 0.05) openness = 0;
     }
 
-    // Check if we are overriding an existing expression?
-    // Usually 'aa' is additive or absolute. 
-    // setValue sets the weight.
     currentVrm.expressionManager.setValue('aa', openness);
 }
 
@@ -931,25 +962,26 @@ function updateExpressions(delta) {
 }
 
 // Optimization: Adaptive Frame Rate Limiter
-// Target 60 FPS when active, drop to 30 FPS when idle (no animation/audio)
-let FPS_LIMIT = 60;
-const FRAME_INTERVAL_60 = 1 / 60;
-const FRAME_INTERVAL_30 = 1 / 30;
+// Target configurable FPS when active, drop to 30 FPS when idle (no animation/audio)
+let targetFps = 60;
 let frameDelta = 0;
 let isIdleMode = false;
 let idleTimeout = null;
+
+function getFrameInterval() {
+    const fps = isIdleMode ? 30 : (currentConfig.targetFps || targetFps);
+    return 1 / fps;
+}
 
 // Track activity for adaptive FPS
 function setActiveMode() {
     if (isIdleMode) {
         isIdleMode = false;
-        FPS_LIMIT = 60;
     }
     // Reset idle timer
     if (idleTimeout) clearTimeout(idleTimeout);
     idleTimeout = setTimeout(() => {
         isIdleMode = true;
-        FPS_LIMIT = 30; // Drop to 30 FPS when idle
     }, 5000); // 5 seconds of no activity
 }
 
@@ -959,7 +991,7 @@ function animate() {
   const delta = clock.getDelta();
   frameDelta += delta;
 
-  const frameInterval = isIdleMode ? FRAME_INTERVAL_30 : FRAME_INTERVAL_60;
+  const frameInterval = getFrameInterval();
 
   // Skip frame if we are too fast
   if (frameDelta < frameInterval) return;
@@ -1097,8 +1129,11 @@ function showDialogue(text, isUser = false, persistent = false, source = 'ai') {
 // --- WebSocket ---
 const ws = new WebSocket('ws://localhost:3000');
 ws.onopen = () => console.log('Connected to Hana Core');
+ws.onerror = (e) => console.error('WebSocket Error:', e);
+ws.onclose = () => console.warn('WebSocket closed - attempting reconnect...');
 ws.onmessage = (event) => {
     const command = JSON.parse(event.data);
+    console.log('[WS] Received:', command.type, command.subtype || '');
     
     if (command.type === 'config-update') {
         const config = command.payload;
@@ -1160,6 +1195,7 @@ ws.onmessage = (event) => {
     } else if (command.type === 'tts:audio') {
         stopThinking(); // Audio received, stop thinking
         const { result, text } = command.payload;
+        console.log('[TTS] Audio received:', result, 'Text:', text?.substring(0, 50));
         if (result) {
             console.log("Queueing TTS Audio:", result);
             // Pass text to queue mechanism for sync

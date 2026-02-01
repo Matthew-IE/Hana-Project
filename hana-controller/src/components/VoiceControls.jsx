@@ -6,16 +6,18 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Mic, Keyboard } from 'lucide-react';
 
-export function VoiceControls({ config, updateConfig, sendCommand, ws }) {
+export function VoiceControls({ config, updateConfig, sendCommand, ws, connected }) {
     const [devices, setDevices] = useState([]);
     const [selectedDeviceId, setSelectedDeviceId] = useState("default");
     const [isRecording, setIsRecording] = useState(false);
     const [isListeningForBind, setIsListeningForBind] = useState(false);
 
-    // Request devices on mount
+    // Request devices when connected (not just on mount)
     useEffect(() => {
-        sendCommand('voice:get-devices');
-    }, [sendCommand]);
+        if (connected) {
+            sendCommand('voice:get-devices');
+        }
+    }, [connected, sendCommand]);
 
     // Listen for WebSocket updates
     useEffect(() => {

@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -135,8 +135,27 @@ class GPTSoVITSManager {
 
     stop() {
         if (this.process) {
-            console.log('Stopping GPT-SoVITS process...');
-            this.process.kill();
+            const pid = this.process.pid;
+            console.log(`Stopping GPT-SoVITS process (PID: ${pid})...`);
+            
+            // On Windows, use taskkill to kill the entire process tree
+            if (process.platform === 'win32') {
+                try {
+                    execSync(`taskkill /pid ${pid} /T /F`, { 
+                        timeout: 5000, 
+                        windowsHide: true,
+                        stdio: 'ignore'
+                    });
+                } catch (e) {
+                    // Process might already be dead
+                }
+            } else {
+                try {
+                    process.kill(-pid, 'SIGTERM');
+                } catch (e) {
+                    this.process.kill('SIGTERM');
+                }
+            }
             this.process = null;
         }
     }

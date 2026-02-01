@@ -147,7 +147,7 @@ async function generateAudio(apiUrl, params) {
         batch_threshold: 0.5,               // Lower threshold
         speed_factor: params.speed_factor || 1.0,
         streaming_mode: true,               // Always stream for faster first-byte
-        media_type: "raw",                  // Raw PCM - no encoding overhead
+        media_type: params.media_type || "wav",  // WAV format for browser playback
         parallel_infer: true,               // Enable parallel inference
         repetition_penalty: 1.25,           // Slightly lower for speed
         split_bucket: false,                // Disable bucket splitting for latency
